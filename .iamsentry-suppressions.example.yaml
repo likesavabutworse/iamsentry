@@ -1,0 +1,15 @@
+# Example suppressions file — copy to .iamsentry-suppressions.yaml (the
+# default name iamsentry looks for in the current directory) or pass
+# --suppressions <path>.
+#
+# Every entry needs rule_id and reason. source_file (a filepath.Match glob
+# against the scanned file's path) and object_name narrow the match to a
+# specific object; omit both to suppress a rule_id everywhere.
+suppressions:
+  - rule_id: example.tags.owner_required
+    source_file: "legacy/*.yaml"
+    reason: "legacy roles predate the owner-tag policy — tracked in TICKET-123"
+
+  - rule_id: SecurityWarningPassRoleWithStarInResource
+    object_name: svc-ci-runner
+    reason: "svc-ci-runner legitimately needs to pass any role for its build matrix — reviewed 2026-08"

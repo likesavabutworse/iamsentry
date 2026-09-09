@@ -1,0 +1,14 @@
+apiVersion: iam.services.k8s.aws/v1alpha1
+kind: Role
+metadata:
+  name: svc-example-prod
+spec:
+  name: svc-example-prod
+  assumeRolePolicyDocument: |
+    {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"pods.eks.amazonaws.com"},"Action":["sts:AssumeRole","sts:TagSession"]}]}
+  inlinePolicies:
+    service-permissions: |
+      {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["s3:ListBucket","s3:GetObject"],"Resource":["*"]}]}
+  tags:
+    - key: owner
+      value: web

@@ -1,0 +1,51 @@
+# Example CheckAccessNotGranted deny list — copy into your own file and
+# pass via --deny-list <file> or --deny-list-dir <dir>. Not loaded by
+# default; unlike the built-in Rego rules, a deny list is inherently an org
+# policy decision, not a universal best practice, so there's no sensible
+# "on by default" version of this.
+#
+# Each entry becomes one live AWS Access Analyzer CheckAccessNotGranted
+# call per scanned policy document — an entry with only `actions` checks
+# whether ANY of them are grantable on any resource; only `resources` checks
+# whether ANY action is grantable on those resources; both checks the
+# specific combination. `id` is required (it becomes the finding's rule_id,
+# for suppression); `reason` is optional but recommended.
+#
+# `resources` entries only accept a wildcard in the resource-ID segment of
+# the ARN (the part after the last colon) — confirmed against a live call,
+# which rejected "arn:aws:kms:*:*:key/prod-*" with ValidationException:
+# Resource ARN is not supported. Account/region/service/partition must be
+# concrete, unlike a Resource element inside an actual IAM policy document.
+deny:
+  # actions-only form
+  - id: no-bucket-delete-or-repolicy
+    actions: ["s3:DeleteBucket", "s3:PutBucketPolicy"]
+    reason: "no workload role ever needs to delete a bucket or rewrite its bucket policy"
+
+  - id: no-org-management
+    actions:
+      - organizations:LeaveOrganization
+      - organizations:DeleteOrganization
+      - organizations:CreateAccount
+    reason: "org-level actions are exclusively a human-admin/control-plane concern"
+
+  # resources-only form — protects one specific critical resource against
+  # any action whatsoever, not just a fixed action list.
+  - id: protect-terraform-state
+    resources:
+      - "arn:aws:s3:::CHANGE-ME-terraform-state-bucket"
+      - "arn:aws:s3:::CHANGE-ME-terraform-state-bucket/*"
+    reason: "no action at all should be grantable against the Terraform state bucket"
+
+  # combined actions+resources form — and the clearest illustration of why
+  # this check is worth a live AWS call instead of a local Rego rule: a
+  # workload role that legitimately holds a broad kms:* grant for
+  # encrypt/decrypt might not realize that grant also covers key deletion.
+  # A local exact-string-match rule only catches "kms:ScheduleKeyDeletion"
+  # written out literally; Access Analyzer's semantic engine (Zelkova, an
+  # SMT-based reasoner, not pattern matching) catches it even when it's
+  # only reachable through a wildcard.
+  - id: no-prod-kms-key-deletion
+    actions: ["kms:ScheduleKeyDeletion", "kms:DisableKey"]
+    resources: ["arn:aws:kms:us-east-1:123456789012:key/prod-*"]
+    reason: "disabling or deleting a prod KMS key is catastrophic and must never be reachable by a workload role, even indirectly through a broader action grant"
