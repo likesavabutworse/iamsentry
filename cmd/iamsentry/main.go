@@ -28,11 +28,18 @@ import (
 // suppressions — see internal/suppress package doc.
 const suppressAnnotation = "iamsentry.io/suppress"
 
+// version is set at release build time by GoReleaser's ldflags.
+var version = "dev"
+
 func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
 func run(args []string) int {
+	if len(args) == 1 && args[0] == "version" {
+		fmt.Println(version)
+		return 0
+	}
 	if len(args) == 0 || args[0] != "scan" {
 		printUsage()
 		return 2
@@ -347,6 +354,7 @@ func printUsage() {
 
 Usage:
   iamsentry scan [flags] <file-or-directory>
+  iamsentry version
 
 Flags:
   -no-aws            disable the AWS Access Analyzer layer (local Rego checks only)

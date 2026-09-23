@@ -1,0 +1,29 @@
+version: 2
+
+project_name: iamsentry
+
+builds:
+  - main: ./cmd/iamsentry
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+# Raw binaries, not tar.gz/zip, named as the pre-GoReleaser workflow named
+# them, so existing download URLs keep working.
+archives:
+  - formats: [binary]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github-native
