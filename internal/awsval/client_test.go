@@ -140,3 +140,34 @@ func TestCheckNoPublicAccess_Fail(t *testing.T) {
 		t.Fatalf("expected 1 finding, got %v", findings)
 	}
 }
+
+func TestValidatePolicy_StatementIndexFromLocation(t *testing.T) {
+	fake := &fakeAPI{
+		validatePolicy: func(*accessanalyzer.ValidatePolicyInput) (*accessanalyzer.ValidatePolicyOutput, error) {
+			return &accessanalyzer.ValidatePolicyOutput{
+				Findings: []types.ValidatePolicyFinding{
+					{
+						FindingType: types.ValidatePolicyFindingTypeError,
+						Locations: []types.Location{{Path: []types.PathElement{
+							&types.PathElementMemberKey{Value: "Statement"},
+							&types.PathElementMemberIndex{Value: 2},
+							&types.PathElementMemberKey{Value: "Resource"},
+						}}},
+					},
+					{FindingType: types.ValidatePolicyFindingTypeError}, // no location
+				},
+			}, nil
+		},
+	}
+
+	findings, err := NewClient(fake).ValidatePolicy(context.Background(), `{}`, types.PolicyTypeIdentityPolicy, "")
+	if err != nil {
+		t.Fatalf("ValidatePolicy: %v", err)
+	}
+	if findings[0].StatementIndex == nil || *findings[0].StatementIndex != 2 {
+		t.Errorf("StatementIndex = %v, want 2", findings[0].StatementIndex)
+	}
+	if findings[1].StatementIndex != nil {
+		t.Errorf("StatementIndex = %d, want nil for a finding with no location", *findings[1].StatementIndex)
+	}
+}

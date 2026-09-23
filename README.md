@@ -55,6 +55,7 @@ iamsentry scan [flags] <file-or-directory>
   -rules-dir dir     directory of additional user-supplied .rego rules
   -fail-on level     minimum severity that causes a non-zero exit (default LOW)
   -no-color          disable ANSI color in output
+  -format fmt        output format: text (default), sarif, or github (Actions annotations)
   -suppressions path path to a suppressions YAML file (default: .iamsentry-suppressions.yaml if present)
   -ignore ids        comma-separated rule_ids to ignore for this run (unscoped, unreasoned, not for committing)
   -deny-list path    path to a CheckAccessNotGranted deny-list YAML file (no default; off unless given)
@@ -75,6 +76,17 @@ or, for plain policy JSON produced by any other tool:
 iamsentry scan ./policies/
 ```
 
+## Output formats
+
+`--format` picks how findings go to stdout. The exit code and `--fail-on`
+work the same in every format.
+
+- **`text`** (default) — grouped by severity, `file:line (object)`.
+- **`sarif`** — SARIF 2.1.0, for GitHub code scanning
+  (`github/codeql-action/upload-sarif`) or any other SARIF consumer.
+- **`github`** — GitHub Actions workflow commands (`::error file=...,line=...::`).
+  GitHub shows them as inline annotations on the PR diff.
+
 ## What it scans
 
 - **Raw IAM policy JSON** (`{"Version": ..., "Statement": [...]}`) — the
@@ -83,7 +95,7 @@ iamsentry scan ./policies/
   auto-detected in YAML or JSON, single file or a directory scanned
   recursively, multi-document YAML supported.
 
-**Not attempted:** resolving `permissionsBoundary`/`permissionsBoundaryRef`
+**Non goals:** resolving `permissionsBoundary`/`permissionsBoundaryRef`
 against the boundary's actual document. IAM permission boundaries are not
 statically validated against a role's declared policy at
 `CreateRole`/`PutRolePolicy` time — AWS computes the boundary ∩ policy
@@ -204,6 +216,7 @@ the current rate before running this at scale.
   today, since `iamsentry` scans IAM roles/policies, not the resource
   policies this operation is built for.
 - **Cedar policy language support.**
+- **pre-commit hook**
 
 ## Development
 

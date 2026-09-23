@@ -55,10 +55,39 @@ type Object struct {
 
 	Tags map[string]string
 
+	// Line is the 1-based line where the object starts in SourceFile; 0 if
+	// unknown. The *Location fields below point at individual policy
+	// documents and their statements within the object.
+	Line                     int
+	DocumentLocation         PolicyLocation
+	AssumeRolePolicyLocation PolicyLocation
+	InlinePolicyLocations    map[string]PolicyLocation
+
 	// Annotations holds metadata.annotations for KindRole/KindPolicy objects
 	// (empty for RawPolicy, which has no metadata) — the CLI reads it for
 	// the per-object "iamsentry.io/suppress" annotation.
 	Annotations map[string]string
+}
+
+// PolicyLocation records where one policy document sits in its source file.
+// Zero values mean unknown.
+type PolicyLocation struct {
+	// Line is the document's first line for a raw policy, or the line of
+	// the CRD field key (e.g. "policyDocument:") that embeds it.
+	Line int
+	// StatementLines holds one line per Statement index. Nil when the
+	// embedding can't be mapped back to file lines — only a literal ("|")
+	// block scalar preserves the embedded JSON's line breaks verbatim.
+	StatementLines []int
+}
+
+// LineFor returns the line of statement stmt, falling back to the
+// document's own line when stmt is nil or out of range.
+func (l PolicyLocation) LineFor(stmt *int) int {
+	if stmt != nil && *stmt >= 0 && *stmt < len(l.StatementLines) {
+		return l.StatementLines[*stmt]
+	}
+	return l.Line
 }
 
 // Skipped records a document that was read but not recognized as a scannable
@@ -134,18 +163,25 @@ func scanFile(f string) ([]Object, []Skipped, error) {
 	var objects []Object
 	var skipped []Skipped
 	for {
-		var doc map[string]any
-		err := dec.Decode(&doc)
+		// Decoding to a yaml.Node first, rather than straight into a map,
+		// keeps the line numbers that findings are reported against.
+		var node yaml.Node
+		err := dec.Decode(&node)
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
 			return nil, nil, fmt.Errorf("parsing %s: %w", f, err)
 		}
+		var doc map[string]any
+		if err := node.Decode(&doc); err != nil {
+			return nil, nil, fmt.Errorf("parsing %s: %w", f, err)
+		}
 		if len(doc) == 0 {
 			continue
 		}
-		obj, skip, err := classify(f, doc)
+		root := node.Content[0]
+		obj, skip, err := classify(f, doc, root)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", f, err)
 		}
@@ -158,7 +194,7 @@ func scanFile(f string) ([]Object, []Skipped, error) {
 	return objects, skipped, nil
 }
 
-func classify(sourceFile string, doc map[string]any) (*Object, string, error) {
+func classify(sourceFile string, doc map[string]any, root *yaml.Node) (*Object, string, error) {
 	kindStr, _ := doc["kind"].(string)
 	apiVersion, _ := doc["apiVersion"].(string)
 
@@ -169,17 +205,17 @@ func classify(sourceFile string, doc map[string]any) (*Object, string, error) {
 		}
 		switch kindStr {
 		case "Role":
-			obj, err := parseAckRole(sourceFile, doc)
+			obj, err := parseAckRole(sourceFile, doc, root)
 			return obj, "", err
 		case "Policy":
-			obj, err := parseAckPolicy(sourceFile, doc)
+			obj, err := parseAckPolicy(sourceFile, doc, root)
 			return obj, "", err
 		default:
 			return nil, fmt.Sprintf("unrecognized %s kind: %s", ackAPIGroupPrefix, kindStr), nil
 		}
 
 	case looksLikePolicyDocument(doc):
-		obj, err := parseRawPolicy(sourceFile, doc)
+		obj, err := parseRawPolicy(sourceFile, doc, root)
 		return obj, "", err
 
 	default:
@@ -195,19 +231,21 @@ func looksLikePolicyDocument(doc map[string]any) bool {
 	return hasStatement
 }
 
-func parseRawPolicy(sourceFile string, doc map[string]any) (*Object, error) {
+func parseRawPolicy(sourceFile string, doc map[string]any, root *yaml.Node) (*Object, error) {
 	d, err := decodeDocument(doc)
 	if err != nil {
 		return nil, fmt.Errorf("decoding raw policy document: %w", err)
 	}
 	return &Object{
-		SourceFile: sourceFile,
-		Kind:       KindRawPolicy,
-		Document:   &d,
+		SourceFile:       sourceFile,
+		Kind:             KindRawPolicy,
+		Document:         &d,
+		Line:             root.Line,
+		DocumentLocation: PolicyLocation{Line: root.Line, StatementLines: statementLines(root, 0)},
 	}, nil
 }
 
-func parseAckPolicy(sourceFile string, doc map[string]any) (*Object, error) {
+func parseAckPolicy(sourceFile string, doc map[string]any, root *yaml.Node) (*Object, error) {
 	spec, _ := doc["spec"].(map[string]any)
 	name, _ := spec["name"].(string)
 	docStr, _ := spec["policyDocument"].(string)
@@ -225,12 +263,16 @@ func parseAckPolicy(sourceFile string, doc map[string]any) (*Object, error) {
 		Document:    &d,
 		Tags:        parseAckTags(spec["tags"]),
 		Annotations: parseAckAnnotations(doc),
+
+		Line:             root.Line,
+		DocumentLocation: embeddedLocation(mappingPath(root, "spec"), "policyDocument"),
 	}, nil
 }
 
-func parseAckRole(sourceFile string, doc map[string]any) (*Object, error) {
+func parseAckRole(sourceFile string, doc map[string]any, root *yaml.Node) (*Object, error) {
 	spec, _ := doc["spec"].(map[string]any)
 	name, _ := spec["name"].(string)
+	specNode := mappingPath(root, "spec")
 
 	obj := &Object{
 		SourceFile:  sourceFile,
@@ -238,6 +280,9 @@ func parseAckRole(sourceFile string, doc map[string]any) (*Object, error) {
 		Name:        name,
 		Tags:        parseAckTags(spec["tags"]),
 		Annotations: parseAckAnnotations(doc),
+
+		Line:                     root.Line,
+		AssumeRolePolicyLocation: embeddedLocation(specNode, "assumeRolePolicyDocument"),
 	}
 
 	if trustStr, ok := spec["assumeRolePolicyDocument"].(string); ok && trustStr != "" {
@@ -250,6 +295,8 @@ func parseAckRole(sourceFile string, doc map[string]any) (*Object, error) {
 
 	if inline, ok := spec["inlinePolicies"].(map[string]any); ok {
 		obj.InlinePolicies = make(map[string]policy.Document, len(inline))
+		obj.InlinePolicyLocations = make(map[string]PolicyLocation, len(inline))
+		inlineNode := mappingPath(specNode, "inlinePolicies")
 		for policyName, v := range inline {
 			docStr, ok := v.(string)
 			if !ok {
@@ -260,6 +307,7 @@ func parseAckRole(sourceFile string, doc map[string]any) (*Object, error) {
 				return nil, fmt.Errorf("kind: Role %q spec.inlinePolicies[%q]: %w", name, policyName, err)
 			}
 			obj.InlinePolicies[policyName] = d
+			obj.InlinePolicyLocations[policyName] = embeddedLocation(inlineNode, policyName)
 		}
 	}
 
@@ -272,6 +320,70 @@ func parseAckRole(sourceFile string, doc map[string]any) (*Object, error) {
 	}
 
 	return obj, nil
+}
+
+// mappingEntry returns the key and value nodes for key in mapping node m,
+// or nils if m is not a mapping or has no such key.
+func mappingEntry(m *yaml.Node, key string) (*yaml.Node, *yaml.Node) {
+	if m == nil || m.Kind != yaml.MappingNode {
+		return nil, nil
+	}
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			return m.Content[i], m.Content[i+1]
+		}
+	}
+	return nil, nil
+}
+
+// mappingPath walks nested mapping keys from m, returning nil if any step
+// is missing.
+func mappingPath(m *yaml.Node, keys ...string) *yaml.Node {
+	for _, k := range keys {
+		_, m = mappingEntry(m, k)
+	}
+	return m
+}
+
+// statementLines returns the line of each Statement entry in policy
+// document node m, shifted by offset. A single-object Statement (valid IAM
+// grammar) counts as index 0.
+func statementLines(m *yaml.Node, offset int) []int {
+	_, stmt := mappingEntry(m, "Statement")
+	switch {
+	case stmt == nil:
+		return nil
+	case stmt.Kind == yaml.SequenceNode:
+		lines := make([]int, len(stmt.Content))
+		for i, n := range stmt.Content {
+			lines[i] = n.Line + offset
+		}
+		return lines
+	default:
+		return []int{stmt.Line + offset}
+	}
+}
+
+// embeddedLocation locates a policy document embedded as a JSON string
+// under key in mapping node parent (the ACK CRD shape).
+func embeddedLocation(parent *yaml.Node, key string) PolicyLocation {
+	k, v := mappingEntry(parent, key)
+	if k == nil {
+		return PolicyLocation{}
+	}
+	loc := PolicyLocation{Line: k.Line}
+	if v.Style != yaml.LiteralStyle {
+		return loc
+	}
+	// JSON is valid YAML, so the embedded string parses to a node tree with
+	// lines relative to the string. A literal block's content starts on the
+	// line after v, so inner line N sits at file line v.Line+N.
+	var inner yaml.Node
+	if err := yaml.Unmarshal([]byte(v.Value), &inner); err != nil || len(inner.Content) == 0 {
+		return loc
+	}
+	loc.StatementLines = statementLines(inner.Content[0], v.Line)
+	return loc
 }
 
 // parseAckAnnotations extracts metadata.annotations (a plain string map in

@@ -152,8 +152,8 @@ func TestRunDenyListChecks(t *testing.T) {
 		t.Fatalf("expected 2 findings, got %d: %+v", len(findings), findings)
 	}
 	for _, f := range findings {
-		if f.IssueCode != "protect-state" {
-			t.Errorf("Finding.IssueCode = %q, want the failing entry's id %q", f.IssueCode, "protect-state")
+		if f.RuleID != "protect-state" {
+			t.Errorf("Result.RuleID = %q, want the failing entry's id %q", f.RuleID, "protect-state")
 		}
 	}
 }
@@ -170,4 +170,40 @@ func TestRunDenyListChecks_NoEntriesMakesNoCalls(t *testing.T) {
 	if findings != nil || len(fake.canCalls) != 0 {
 		t.Errorf("expected no calls and no findings with an empty deny list, got %d calls, %v findings", len(fake.canCalls), findings)
 	}
+}
+
+func TestRunAccessAnalyzer_ResolvesStatementLine(t *testing.T) {
+	fake := &locatingAPI{}
+	c := awsval.NewClient(fake)
+	obj := input.Object{
+		Kind:       input.KindRole,
+		SourceFile: "role.yaml",
+		InlinePolicies: map[string]policy.Document{
+			"perms": {Statement: []policy.Statement{{Effect: "Allow"}, {Effect: "Allow"}}},
+		},
+		InlinePolicyLocations: map[string]input.PolicyLocation{
+			"perms": {Line: 10, StatementLines: []int{12, 13}},
+		},
+	}
+
+	results, err := runAccessAnalyzer(context.Background(), c, obj)
+	if err != nil {
+		t.Fatalf("runAccessAnalyzer: %v", err)
+	}
+	if len(results) != 1 || results[0].Line != 13 {
+		t.Fatalf("expected one result at line 13 (statement 1 of perms), got %+v", results)
+	}
+}
+
+// locatingAPI returns one ValidatePolicy finding located at Statement[1].
+type locatingAPI struct{ capturingAPI }
+
+func (f *locatingAPI) ValidatePolicy(context.Context, *accessanalyzer.ValidatePolicyInput, ...func(*accessanalyzer.Options)) (*accessanalyzer.ValidatePolicyOutput, error) {
+	return &accessanalyzer.ValidatePolicyOutput{Findings: []types.ValidatePolicyFinding{{
+		FindingType: types.ValidatePolicyFindingTypeError,
+		Locations: []types.Location{{Path: []types.PathElement{
+			&types.PathElementMemberKey{Value: "Statement"},
+			&types.PathElementMemberIndex{Value: 1},
+		}}},
+	}}}, nil
 }

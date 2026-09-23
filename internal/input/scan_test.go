@@ -207,3 +207,106 @@ func TestScan_MalformedJSONIsHardError(t *testing.T) {
 		t.Errorf("error = %q, want it to name the failing field/parse step", err.Error())
 	}
 }
+
+func TestScan_RawPolicyStatementLines(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "policy.json", `{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Effect": "Allow", "Action": "s3:GetObject", "Resource": "*"},
+    {
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "*"
+    }
+  ]
+}`)
+
+	objs, _, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	loc := objs[0].DocumentLocation
+	if loc.Line != 1 {
+		t.Errorf("DocumentLocation.Line = %d, want 1", loc.Line)
+	}
+	if want := []int{4, 5}; !equalInts(loc.StatementLines, want) {
+		t.Errorf("StatementLines = %v, want %v", loc.StatementLines, want)
+	}
+}
+
+func TestScan_AckRoleEmbeddedPolicyLines(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "roles.yaml", `apiVersion: iam.services.k8s.aws/v1alpha1
+kind: Policy
+spec:
+  name: first
+  policyDocument: '{"Version":"2012-10-17","Statement":[]}'
+---
+apiVersion: iam.services.k8s.aws/v1alpha1
+kind: Role
+spec:
+  name: second
+  assumeRolePolicyDocument: '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"sts:AssumeRole"}]}'
+  inlinePolicies:
+    perms: |
+      {
+        "Version": "2012-10-17",
+        "Statement": [
+          {"Effect": "Allow", "Action": "s3:GetObject", "Resource": "*"},
+          {"Effect": "Allow", "Action": "s3:PutObject", "Resource": "*"}
+        ]
+      }
+`)
+
+	objs, _, err := Scan(dir)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(objs) != 2 {
+		t.Fatalf("expected 2 objects, got %d", len(objs))
+	}
+
+	role := objs[1]
+	if role.Line != 7 {
+		t.Errorf("Role Line = %d, want 7 (lines must count across the --- separator)", role.Line)
+	}
+
+	// A quoted scalar collapses the JSON onto the key's line, so only the
+	// field line is known.
+	trust := role.AssumeRolePolicyLocation
+	if trust.Line != 11 || trust.StatementLines != nil {
+		t.Errorf("AssumeRolePolicyLocation = %+v, want Line 11 and no StatementLines", trust)
+	}
+
+	perms := role.InlinePolicyLocations["perms"]
+	if perms.Line != 13 {
+		t.Errorf("perms Line = %d, want 13", perms.Line)
+	}
+	if want := []int{17, 18}; !equalInts(perms.StatementLines, want) {
+		t.Errorf("perms StatementLines = %v, want %v", perms.StatementLines, want)
+	}
+
+	one, outOfRange := 1, 5
+	if got := perms.LineFor(&one); got != 18 {
+		t.Errorf("LineFor(1) = %d, want 18", got)
+	}
+	if got := perms.LineFor(&outOfRange); got != 13 {
+		t.Errorf("LineFor(out of range) = %d, want fallback 13", got)
+	}
+	if got := perms.LineFor(nil); got != 13 {
+		t.Errorf("LineFor(nil) = %d, want fallback 13", got)
+	}
+}
+
+func equalInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

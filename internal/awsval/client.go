@@ -41,6 +41,9 @@ type Finding struct {
 	Message   string
 	IssueCode string
 	LearnMore string
+	// StatementIndex is the 0-based index into the policy's Statement array
+	// the finding points at; nil when AWS gave no statement location.
+	StatementIndex *int
 }
 
 // ValidatePolicy has no severity field in the SDK response — only
@@ -63,11 +66,12 @@ func (c *Client) ValidatePolicy(ctx context.Context, policyDocument string, poli
 		}
 		for _, f := range out.Findings {
 			findings = append(findings, Finding{
-				Check:     "ValidatePolicy",
-				Severity:  string(f.FindingType),
-				Message:   deref(f.FindingDetails),
-				IssueCode: deref(f.IssueCode),
-				LearnMore: deref(f.LearnMoreLink),
+				Check:          "ValidatePolicy",
+				Severity:       string(f.FindingType),
+				Message:        deref(f.FindingDetails),
+				IssueCode:      deref(f.IssueCode),
+				LearnMore:      deref(f.LearnMoreLink),
+				StatementIndex: statementIndex(f.Locations),
 			})
 		}
 	}
@@ -133,9 +137,33 @@ func reasonsToFindings(check, message string, reasons []types.ReasonSummary) []F
 		} else if r.StatementIndex != nil {
 			msg = fmt.Sprintf("[statement %d] %s", *r.StatementIndex, msg)
 		}
-		findings = append(findings, Finding{Check: check, Severity: "FAIL", Message: msg})
+		f := Finding{Check: check, Severity: "FAIL", Message: msg}
+		if r.StatementIndex != nil {
+			i := int(*r.StatementIndex)
+			f.StatementIndex = &i
+		}
+		findings = append(findings, f)
 	}
 	return findings
+}
+
+// statementIndex extracts the Statement index from the first location's
+// path (e.g. Statement[2].Resource[0] -> 2). Only the first location is
+// used because a finding is reported at one line.
+func statementIndex(locs []types.Location) *int {
+	if len(locs) == 0 || len(locs[0].Path) < 2 {
+		return nil
+	}
+	path := locs[0].Path
+	if k, ok := path[0].(*types.PathElementMemberKey); !ok || k.Value != "Statement" {
+		return nil
+	}
+	idx, ok := path[1].(*types.PathElementMemberIndex)
+	if !ok {
+		return nil
+	}
+	i := int(idx.Value)
+	return &i
 }
 
 func deref(s *string) string {

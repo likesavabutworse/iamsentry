@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/likesavabutworse/iamsentry/internal/awsval"
+	"github.com/likesavabutworse/iamsentry/internal/input"
 )
 
 func TestFromAccessAnalyzer_RuleIDPrefersIssueCode(t *testing.T) {
@@ -11,7 +12,7 @@ func TestFromAccessAnalyzer_RuleIDPrefersIssueCode(t *testing.T) {
 		{Check: "ValidatePolicy", IssueCode: "SecurityWarningPassRoleWithStarInResource"},
 		{Check: "CheckAccessNotGranted", IssueCode: ""}, // custom checks carry no IssueCode
 	}
-	results := FromAccessAnalyzer("role.yaml", "svc-a", findings)
+	results := FromAccessAnalyzer("role.yaml", "svc-a", input.PolicyLocation{}, findings)
 	if results[0].RuleID != "SecurityWarningPassRoleWithStarInResource" {
 		t.Errorf("RuleID = %q, want the IssueCode", results[0].RuleID)
 	}

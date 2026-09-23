@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/likesavabutworse/iamsentry/internal/awsval"
+	"github.com/likesavabutworse/iamsentry/internal/input"
 	"github.com/likesavabutworse/iamsentry/internal/rules"
 )
 
@@ -29,6 +30,7 @@ type Result struct {
 	Severity   string // normalized to one of Severity* below
 	Message    string
 	SourceFile string
+	Line       int // 1-based; 0 when unknown
 	ObjectName string
 	LearnMore  string
 }
@@ -96,9 +98,10 @@ func NormalizeRegoSeverity(s string) string {
 	}
 }
 
-// FromAccessAnalyzer converts awsval.Findings for one scanned object into
-// unified Results.
-func FromAccessAnalyzer(sourceFile, objectName string, findings []awsval.Finding) []Result {
+// FromAccessAnalyzer converts awsval.Findings for one policy document of a
+// scanned object into unified Results. loc resolves each finding's
+// statement index to a line.
+func FromAccessAnalyzer(sourceFile, objectName string, loc input.PolicyLocation, findings []awsval.Finding) []Result {
 	results := make([]Result, 0, len(findings))
 	for _, f := range findings {
 		ruleID := f.IssueCode
@@ -114,6 +117,7 @@ func FromAccessAnalyzer(sourceFile, objectName string, findings []awsval.Finding
 			Severity:   NormalizeAccessAnalyzerSeverity(f.Severity),
 			Message:    f.Message,
 			SourceFile: sourceFile,
+			Line:       loc.LineFor(f.StatementIndex),
 			ObjectName: objectName,
 			LearnMore:  f.LearnMore,
 		})
@@ -122,8 +126,9 @@ func FromAccessAnalyzer(sourceFile, objectName string, findings []awsval.Finding
 }
 
 // FromRego converts rules.Violations for one scanned object into unified
-// Results.
-func FromRego(sourceFile, objectName string, violations []rules.Violation) []Result {
+// Results. Violations carry no statement location, so every Result gets
+// the same line.
+func FromRego(sourceFile, objectName string, line int, violations []rules.Violation) []Result {
 	results := make([]Result, 0, len(violations))
 	for _, v := range violations {
 		results = append(results, Result{
@@ -132,21 +137,25 @@ func FromRego(sourceFile, objectName string, violations []rules.Violation) []Res
 			Severity:   NormalizeRegoSeverity(v.Severity),
 			Message:    v.Msg,
 			SourceFile: sourceFile,
+			Line:       line,
 			ObjectName: objectName,
 		})
 	}
 	return results
 }
 
-// Sort orders results by severity (most severe first), then source file,
-// for stable, scannable output.
+// Sort orders results by severity (most severe first), then source file
+// and line, for stable, scannable output.
 func Sort(results []Result) {
 	sort.SliceStable(results, func(i, j int) bool {
 		si, sj := severityOrder[results[i].Severity], severityOrder[results[j].Severity]
 		if si != sj {
 			return si < sj
 		}
-		return results[i].SourceFile < results[j].SourceFile
+		if results[i].SourceFile != results[j].SourceFile {
+			return results[i].SourceFile < results[j].SourceFile
+		}
+		return results[i].Line < results[j].Line
 	})
 }
 
@@ -199,6 +208,9 @@ func sevHeading(severity string, color bool) string {
 func formatResult(r Result, color bool) string {
 	var b strings.Builder
 	loc := r.SourceFile
+	if r.Line > 0 {
+		loc = fmt.Sprintf("%s:%d", loc, r.Line)
+	}
 	if r.ObjectName != "" {
 		loc = fmt.Sprintf("%s (%s)", loc, r.ObjectName)
 	}

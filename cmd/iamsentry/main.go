@@ -43,6 +43,7 @@ func run(args []string) int {
 	rulesDir := fs.String("rules-dir", "", "directory of additional user-supplied .rego rules")
 	threshold := fs.String("fail-on", render.SeverityLow, "minimum severity that causes a non-zero exit (ERROR|HIGH|MEDIUM|LOW|INFO)")
 	noColor := fs.Bool("no-color", false, "disable ANSI color in output")
+	format := fs.String("format", "text", "output format: text, sarif (GitHub code scanning and other SARIF consumers), or github (GitHub Actions annotations)")
 	suppressionsPath := fs.String("suppressions", "", "path to a suppressions YAML file (default: "+suppress.DefaultFileName+" in the current directory, if present)")
 	ignore := fs.String("ignore", "", "comma-separated rule_ids to ignore for this run (not scoped, not reasoned — for transient local overrides, not for committing)")
 	denyListFile := fs.String("deny-list", "", "path to a CheckAccessNotGranted deny-list YAML file — see denylist/examples/example.yaml. No default; off unless given")
@@ -55,6 +56,12 @@ func run(args []string) int {
 		return 2
 	}
 	path := fs.Arg(0)
+	switch *format {
+	case "text", "sarif", "github":
+	default:
+		fmt.Fprintf(os.Stderr, "error: unknown --format %q (want text, sarif, or github)\n", *format)
+		return 2
+	}
 
 	ctx := context.Background()
 
@@ -108,22 +115,22 @@ func run(args []string) int {
 			fmt.Fprintf(os.Stderr, "error evaluating rules against %s: %v\n", obj.SourceFile, err)
 			return 2
 		}
-		results = append(results, render.FromRego(obj.SourceFile, obj.Name, violations)...)
+		results = append(results, render.FromRego(obj.SourceFile, obj.Name, regoLine(obj), violations)...)
 
 		if awsClient != nil {
-			findings, err := runAccessAnalyzer(ctx, awsClient, obj)
+			aaResults, err := runAccessAnalyzer(ctx, awsClient, obj)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error calling Access Analyzer for %s: %v\n", obj.SourceFile, err)
 				return 2
 			}
-			results = append(results, render.FromAccessAnalyzer(obj.SourceFile, obj.Name, findings)...)
+			results = append(results, aaResults...)
 
-			denyFindings, err := runDenyListChecks(ctx, awsClient, obj, denyEntries)
+			denyResults, err := runDenyListChecks(ctx, awsClient, obj, denyEntries)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "error running deny-list checks for %s: %v\n", obj.SourceFile, err)
 				return 2
 			}
-			results = append(results, render.FromAccessAnalyzer(obj.SourceFile, obj.Name, denyFindings)...)
+			results = append(results, denyResults...)
 		}
 
 		if ids := obj.Annotations[suppressAnnotation]; ids != "" {
@@ -141,8 +148,28 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "suppressed %d finding(s) (see --suppressions / %s)\n", len(suppressed), suppress.DefaultFileName)
 	}
 
-	render.Write(os.Stdout, kept, !*noColor)
+	switch *format {
+	case "sarif":
+		if err := render.WriteSARIF(os.Stdout, kept); err != nil {
+			fmt.Fprintf(os.Stderr, "error: writing SARIF: %v\n", err)
+			return 2
+		}
+	case "github":
+		render.WriteGitHub(os.Stdout, kept)
+	default:
+		render.Write(os.Stdout, kept, !*noColor)
+	}
 	return render.ExitCode(kept, *threshold)
+}
+
+// regoLine picks the line Rego findings are reported at. Violations don't
+// say which statement (or, for a Role, which policy document) they came
+// from, so a Role's findings point at the object itself.
+func regoLine(obj input.Object) int {
+	if obj.Kind == input.KindRole {
+		return obj.Line
+	}
+	return obj.DocumentLocation.Line
 }
 
 // loadSuppressions merges, in order: an explicit --suppressions file (error
@@ -203,10 +230,10 @@ func splitCommaList(s string) []string {
 // on obj: the trust policy and each inline policy for a Role, or the single
 // document for a Policy/RawPolicy. The other three Access Analyzer
 // operations aren't called here — see README's "Future extensions".
-func runAccessAnalyzer(ctx context.Context, c *awsval.Client, obj input.Object) ([]awsval.Finding, error) {
-	var all []awsval.Finding
+func runAccessAnalyzer(ctx context.Context, c *awsval.Client, obj input.Object) ([]render.Result, error) {
+	var all []render.Result
 
-	check := func(doc *policy.Document, policyType types.PolicyType, resourceType types.ValidatePolicyResourceType) error {
+	check := func(doc *policy.Document, loc input.PolicyLocation, policyType types.PolicyType, resourceType types.ValidatePolicyResourceType) error {
 		if doc == nil {
 			return nil
 		}
@@ -218,13 +245,13 @@ func runAccessAnalyzer(ctx context.Context, c *awsval.Client, obj input.Object) 
 		if err != nil {
 			return err
 		}
-		all = append(all, findings...)
+		all = append(all, render.FromAccessAnalyzer(obj.SourceFile, obj.Name, loc, findings)...)
 		return nil
 	}
 
 	switch obj.Kind {
 	case input.KindRawPolicy, input.KindPolicy:
-		if err := check(obj.Document, types.PolicyTypeIdentityPolicy, ""); err != nil {
+		if err := check(obj.Document, obj.DocumentLocation, types.PolicyTypeIdentityPolicy, ""); err != nil {
 			return nil, err
 		}
 	case input.KindRole:
@@ -234,12 +261,12 @@ func runAccessAnalyzer(ctx context.Context, c *awsval.Client, obj input.Object) 
 		// spurious MISSING_RESOURCE finding. Confirmed against a live
 		// account: omitting this fired MISSING_RESOURCE on a standard,
 		// valid EKS Pod Identity trust policy.
-		if err := check(obj.AssumeRolePolicy, types.PolicyTypeResourcePolicy, types.ValidatePolicyResourceTypeRoleTrust); err != nil {
+		if err := check(obj.AssumeRolePolicy, obj.AssumeRolePolicyLocation, types.PolicyTypeResourcePolicy, types.ValidatePolicyResourceTypeRoleTrust); err != nil {
 			return nil, err
 		}
-		for _, inline := range obj.InlinePolicies {
+		for name, inline := range obj.InlinePolicies {
 			d := inline
-			if err := check(&d, types.PolicyTypeIdentityPolicy, ""); err != nil {
+			if err := check(&d, obj.InlinePolicyLocations[name], types.PolicyTypeIdentityPolicy, ""); err != nil {
 				return nil, err
 			}
 		}
@@ -261,28 +288,32 @@ func runAccessAnalyzer(ctx context.Context, c *awsval.Client, obj input.Object) 
 // ability to say *which* entry a FAIL belongs to. A FAIL's Finding is
 // tagged with entry.ID via IssueCode (reusing the field ValidatePolicy
 // puts its issue codes in) so it gets a stable, suppressible rule_id.
-func runDenyListChecks(ctx context.Context, c *awsval.Client, obj input.Object, entries []denylist.Entry) ([]awsval.Finding, error) {
+func runDenyListChecks(ctx context.Context, c *awsval.Client, obj input.Object, entries []denylist.Entry) ([]render.Result, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
 
-	var docs []*policy.Document
+	type locatedDoc struct {
+		doc *policy.Document
+		loc input.PolicyLocation
+	}
+	var docs []locatedDoc
 	switch obj.Kind {
 	case input.KindRawPolicy, input.KindPolicy:
-		docs = []*policy.Document{obj.Document}
+		docs = []locatedDoc{{obj.Document, obj.DocumentLocation}}
 	case input.KindRole:
-		for _, inline := range obj.InlinePolicies {
+		for name, inline := range obj.InlinePolicies {
 			d := inline
-			docs = append(docs, &d)
+			docs = append(docs, locatedDoc{&d, obj.InlinePolicyLocations[name]})
 		}
 	}
 
-	var all []awsval.Finding
-	for _, doc := range docs {
-		if doc == nil {
+	var all []render.Result
+	for _, ld := range docs {
+		if ld.doc == nil {
 			continue
 		}
-		raw, err := json.Marshal(doc)
+		raw, err := json.Marshal(ld.doc)
 		if err != nil {
 			return nil, err
 		}
@@ -295,7 +326,7 @@ func runDenyListChecks(ctx context.Context, c *awsval.Client, obj input.Object, 
 			for i := range findings {
 				findings[i].IssueCode = entry.ID
 			}
-			all = append(all, findings...)
+			all = append(all, render.FromAccessAnalyzer(obj.SourceFile, obj.Name, ld.loc, findings)...)
 		}
 	}
 	return all, nil
@@ -322,6 +353,7 @@ Flags:
   -rules-dir dir     directory of additional user-supplied .rego rules
   -fail-on level     minimum severity that causes a non-zero exit (default LOW)
   -no-color          disable ANSI color in output
+  -format fmt        output format: text (default), sarif, or github (Actions annotations)
   -suppressions path path to a suppressions YAML file (default: .iamsentry-suppressions.yaml if present)
   -ignore ids        comma-separated rule_ids to ignore for this run (unscoped, unreasoned, not for committing)
   -deny-list path    path to a CheckAccessNotGranted deny-list YAML file (no default; off unless given)
