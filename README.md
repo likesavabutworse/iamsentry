@@ -214,6 +214,39 @@ billed calls per run. Check
 [AWS's pricing page](https://aws.amazon.com/iam/access-analyzer/pricing/) for
 the current rate before running this at scale.
 
+### GitHub Action
+
+The repository is also a composite action:
+
+```yaml
+permissions:
+  contents: read
+  security-events: write   # for the SARIF upload
+
+steps:
+  - uses: actions/checkout@v7
+  - uses: likesavabutworse/iamsentry@main
+    with:
+      path: ./policies
+```
+
+| Input | Default | |
+|---|---|---|
+| `path` | `.` | IAM policy JSON, or an ACK Role/Policy CRD file or directory |
+| `no-aws` | `false` | disable the AWS Access Analyzer layer (local Rego checks only) |
+| `rules-dir` | | directory of additional user-supplied `.rego` rules |
+| `suppressions` | | path to a suppressions YAML file (default: `.iamsentry-suppressions.yaml` if present) |
+| `deny-list` | | path to a `CheckAccessNotGranted` deny-list YAML file |
+| `deny-list-dir` | | directory of deny-list YAML files (mutually exclusive with `deny-list`) |
+| `args` | | extra `iamsentry scan` arguments, e.g. `--ignore some-rule-id` |
+| `fail-on` | `LOW` | `ERROR`, `HIGH`, `MEDIUM`, `LOW`, `INFO`, or `never` |
+| `version` | `latest` | a release such as `v0.0.7`; pin one in CI |
+| `upload-sarif` | `true` | needs `security-events: write`, and code scanning enabled on a private repository |
+| `annotations` | `false` | also print annotations on the PR diff |
+
+The AWS Access Analyzer layer needs AWS credentials in the job (e.g.
+`aws-actions/configure-aws-credentials`) unless `no-aws: "true"` is set.
+
 ## Future extensions
 
 - **`CheckNoNewAccess`** — diffs a new policy against a baseline (e.g. a

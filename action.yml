@@ -1,0 +1,131 @@
+name: iamsentry
+description: Scan IAM policy documents with iamsentry, and upload the findings to code scanning.
+branding:
+  icon: shield
+  color: blue
+
+inputs:
+  path:
+    description: IAM policy JSON, or an ACK Role/Policy CRD file or directory, to scan.
+    default: "."
+  no-aws:
+    description: Disable the AWS Access Analyzer layer (local Rego checks only).
+    default: "false"
+  rules-dir:
+    description: Directory of additional user-supplied .rego rules.
+    default: ""
+  suppressions:
+    description: Path to a suppressions YAML file. Default -- .iamsentry-suppressions.yaml if present.
+    default: ""
+  deny-list:
+    description: Path to a CheckAccessNotGranted deny-list YAML file.
+    default: ""
+  deny-list-dir:
+    description: Directory of deny-list YAML files, merged (mutually exclusive with deny-list).
+    default: ""
+  args:
+    description: Extra arguments for `iamsentry scan`, for example "--ignore some-rule-id".
+    default: ""
+  fail-on:
+    description: "Fail the step on findings at or above this severity: ERROR, HIGH, MEDIUM, LOW, INFO, or never."
+    default: LOW
+  version:
+    description: 'iamsentry release to install, for example "v0.0.7". Default: the latest.'
+    default: latest
+  upload-sarif:
+    description: "Upload a SARIF report to GitHub code scanning. Needs `security-events: write`, and code scanning enabled for private repositories."
+    default: "true"
+  annotations:
+    description: Also print GitHub Actions annotations, which show up on the pull request diff.
+    default: "false"
+
+outputs:
+  exit-code:
+    description: "iamsentry's exit code: 0 clean, 1 findings, 2 error."
+    value: ${{ steps.scan.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install iamsentry
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        VERSION: ${{ inputs.version }}
+      run: |
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64)    asset=iamsentry_linux_amd64 ;;
+          Linux-ARM64)  asset=iamsentry_linux_arm64 ;;
+          macOS-X64)    asset=iamsentry_darwin_amd64 ;;
+          macOS-ARM64)  asset=iamsentry_darwin_arm64 ;;
+          Windows-X64)  asset=iamsentry_windows_amd64.exe ;;
+          *) echo "::error::iamsentry has no build for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+        esac
+        dir="$RUNNER_TEMP/iamsentry-bin"
+        mkdir -p "$dir"
+        tag=""
+        if [ "$VERSION" != "latest" ]; then tag="$VERSION"; fi
+        # gh is on every GitHub-hosted runner and, unlike curl, also works while
+        # the repository is private.
+        gh release download $tag --repo likesavabutworse/iamsentry \
+          --pattern "$asset" --pattern checksums.txt --dir "$dir" --clobber
+        cd "$dir"
+        if command -v sha256sum >/dev/null; then sum="sha256sum -c"; else sum="shasum -a 256 -c"; fi
+        grep " $asset\$" checksums.txt | $sum -
+        bin=iamsentry
+        case "$asset" in *.exe) bin=iamsentry.exe ;; esac
+        mv "$asset" "$bin"
+        chmod +x "$bin"
+        echo "$dir" >> "$GITHUB_PATH"
+
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        SCAN_PATH: ${{ inputs.path }}
+        NO_AWS: ${{ inputs.no-aws }}
+        RULES_DIR: ${{ inputs.rules-dir }}
+        SUPPRESSIONS: ${{ inputs.suppressions }}
+        DENY_LIST: ${{ inputs.deny-list }}
+        DENY_LIST_DIR: ${{ inputs.deny-list-dir }}
+        EXTRA_ARGS: ${{ inputs.args }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        SARIF: ${{ inputs.upload-sarif }}
+        ANNOTATIONS: ${{ inputs.annotations }}
+      run: |
+        out="$RUNNER_TEMP/iamsentry"
+        mkdir -p "$out"
+        flags=(--fail-on "$FAIL_ON" -o text)
+        if [ "$NO_AWS" = "true" ]; then flags+=(--no-aws); fi
+        if [ -n "$RULES_DIR" ]; then flags+=(--rules-dir "$RULES_DIR"); fi
+        if [ -n "$SUPPRESSIONS" ]; then flags+=(--suppressions "$SUPPRESSIONS"); fi
+        if [ -n "$DENY_LIST" ]; then flags+=(--deny-list "$DENY_LIST"); fi
+        if [ -n "$DENY_LIST_DIR" ]; then flags+=(--deny-list-dir "$DENY_LIST_DIR"); fi
+        if [ "$SARIF" = "true" ]; then flags+=(-o "sarif=$out/iamsentry.sarif"); fi
+        if [ "$ANNOTATIONS" = "true" ]; then flags+=(-o "github=$out/annotations.txt"); fi
+        # The exit code is passed on at the end, so the report is uploaded
+        # even when the scan finds something.
+        set +e
+        # EXTRA_ARGS is split on whitespace on purpose.
+        iamsentry scan "${flags[@]}" $EXTRA_ARGS "$SCAN_PATH"
+        code=$?
+        set -e
+        # Workflow commands are read from stdout, so print the annotations.
+        if [ -f "$out/annotations.txt" ]; then cat "$out/annotations.txt"; fi
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        if [ -f "$out/iamsentry.sarif" ]; then
+          echo "sarif=$out/iamsentry.sarif" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Upload SARIF
+      # A scan that failed outright (exit 2) writes no report.
+      if: always() && steps.scan.outputs.sarif != ''
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: ${{ steps.scan.outputs.sarif }}
+        category: iamsentry
+
+    - name: Fail on findings
+      if: always() && steps.scan.outputs.exit-code != '0' && steps.scan.outputs.exit-code != ''
+      shell: bash
+      run: exit ${{ steps.scan.outputs.exit-code }}
