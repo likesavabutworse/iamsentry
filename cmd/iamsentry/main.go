@@ -6,8 +6,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -50,7 +52,9 @@ func run(args []string) int {
 	rulesDir := fs.String("rules-dir", "", "directory of additional user-supplied .rego rules")
 	threshold := fs.String("fail-on", render.SeverityLow, "minimum severity that causes a non-zero exit (ERROR|HIGH|MEDIUM|LOW|INFO)")
 	noColor := fs.Bool("no-color", false, "disable ANSI color in output")
-	format := fs.String("format", "text", "output format: text, sarif (GitHub code scanning and other SARIF consumers), or github (GitHub Actions annotations)")
+	var outputSpecs outputFlag
+	fs.Var(&outputSpecs, "o", "output format[=file]: text, sarif, or github (repeatable; at most one without a file, which goes to stdout)")
+	fs.Var(&outputSpecs, "output", "same as -o")
 	suppressionsPath := fs.String("suppressions", "", "path to a suppressions YAML file (default: "+suppress.DefaultFileName+" in the current directory, if present)")
 	ignore := fs.String("ignore", "", "comma-separated rule_ids to ignore for this run (not scoped, not reasoned — for transient local overrides, not for committing)")
 	denyListFile := fs.String("deny-list", "", "path to a CheckAccessNotGranted deny-list YAML file — see denylist/examples/example.yaml. No default; off unless given")
@@ -63,10 +67,12 @@ func run(args []string) int {
 		return 2
 	}
 	path := fs.Arg(0)
-	switch *format {
-	case "text", "sarif", "github":
-	default:
-		fmt.Fprintf(os.Stderr, "error: unknown --format %q (want text, sarif, or github)\n", *format)
+	if len(outputSpecs) == 0 {
+		outputSpecs = outputFlag{"text"}
+	}
+	outputs, err := parseOutputs(outputSpecs)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 2
 	}
 
@@ -155,16 +161,11 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "suppressed %d finding(s) (see --suppressions / %s)\n", len(suppressed), suppress.DefaultFileName)
 	}
 
-	switch *format {
-	case "sarif":
-		if err := render.WriteSARIF(os.Stdout, kept); err != nil {
-			fmt.Fprintf(os.Stderr, "error: writing SARIF: %v\n", err)
+	for _, out := range outputs {
+		if err := out.write(os.Stdout, kept, *noColor); err != nil {
+			fmt.Fprintf(os.Stderr, "error: writing %s: %v\n", out.format, err)
 			return 2
 		}
-	case "github":
-		render.WriteGitHub(os.Stdout, kept)
-	default:
-		render.Write(os.Stdout, kept, !*noColor)
 	}
 	return render.ExitCode(kept, *threshold)
 }
@@ -217,6 +218,81 @@ func loadDenyList(file, dir string) ([]denylist.Entry, error) {
 	default:
 		return nil, nil
 	}
+}
+
+// outputFlag collects repeated -o/--output occurrences into one slice; both
+// flags are registered against the same instance, so either spelling (or a
+// mix of both) appends to the same list.
+type outputFlag []string
+
+func (o *outputFlag) String() string { return strings.Join(*o, ",") }
+func (o *outputFlag) Set(v string) error {
+	*o = append(*o, v)
+	return nil
+}
+
+type output struct{ format, path string }
+
+// parseOutputs is strict up front so a typo fails before the scan runs, not
+// after it. Two outputs on stdout would interleave, so only one is allowed.
+func parseOutputs(specs []string) ([]output, error) {
+	var outs []output
+	toStdout := 0
+	for _, s := range specs {
+		format, path, _ := strings.Cut(s, "=")
+		switch format {
+		case "text", "sarif", "github":
+		default:
+			return nil, fmt.Errorf("-o %q: want text, sarif, or github, optionally as format=file", s)
+		}
+		if path == "" {
+			toStdout++
+		}
+		outs = append(outs, output{format, path})
+	}
+	if toStdout > 1 {
+		return nil, errors.New("-o: only one format can go to stdout; give the others a file, e.g. -o sarif=iamsentry.sarif")
+	}
+	return outs, nil
+}
+
+func (o output) write(stdout io.Writer, results []render.Result, noColor bool) (err error) {
+	w := stdout
+	if o.path != "" {
+		f, createErr := os.Create(o.path)
+		if createErr != nil {
+			return createErr
+		}
+		// Named return, not a shadowed local: this is what lets the
+		// deferred close error join into whatever the switch below returns.
+		defer func() { err = errors.Join(err, f.Close()) }()
+		w = f
+	}
+	switch o.format {
+	case "sarif":
+		return render.WriteSARIF(w, results)
+	case "github":
+		render.WriteGitHub(w, results)
+		return nil
+	default:
+		render.Write(w, results, useColor(w, noColor))
+		return nil
+	}
+}
+
+// useColor disables color for NO_COLOR, --no-color, and any writer that
+// isn't a terminal — most importantly a file an -o output was sent to,
+// which would otherwise end up full of raw ANSI escapes.
+func useColor(w io.Writer, disabled bool) bool {
+	if disabled || os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := f.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 func splitCommaList(s string) []string {
@@ -361,7 +437,8 @@ Flags:
   -rules-dir dir     directory of additional user-supplied .rego rules
   -fail-on level     minimum severity that causes a non-zero exit (default LOW)
   -no-color          disable ANSI color in output
-  -format fmt        output format: text (default), sarif, or github (Actions annotations)
+  -o, -output fmt[=file]  output format[=file]: text (default), sarif, or github (Actions
+                      annotations); repeatable, at most one without a file (goes to stdout)
   -suppressions path path to a suppressions YAML file (default: .iamsentry-suppressions.yaml if present)
   -ignore ids        comma-separated rule_ids to ignore for this run (unscoped, unreasoned, not for committing)
   -deny-list path    path to a CheckAccessNotGranted deny-list YAML file (no default; off unless given)

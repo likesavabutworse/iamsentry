@@ -55,7 +55,8 @@ iamsentry scan [flags] <file-or-directory>
   -rules-dir dir     directory of additional user-supplied .rego rules
   -fail-on level     minimum severity that causes a non-zero exit (default LOW)
   -no-color          disable ANSI color in output
-  -format fmt        output format: text (default), sarif, or github (Actions annotations)
+  -o, -output fmt[=file]  output format[=file]: text (default), sarif, or github (Actions
+                      annotations); repeatable, at most one without a file (goes to stdout)
   -suppressions path path to a suppressions YAML file (default: .iamsentry-suppressions.yaml if present)
   -ignore ids        comma-separated rule_ids to ignore for this run (unscoped, unreasoned, not for committing)
   -deny-list path    path to a CheckAccessNotGranted deny-list YAML file (no default; off unless given)
@@ -78,8 +79,16 @@ iamsentry scan ./policies/
 
 ## Output formats
 
-`--format` picks how findings go to stdout. The exit code and `--fail-on`
-work the same in every format.
+`-o`/`-output` picks how findings are rendered, and where. It's repeatable,
+so one run can emit several formats at once — e.g. human-readable text on
+stdout for the job log, plus a SARIF file for code scanning upload:
+
+```sh
+iamsentry scan ./policies/ -o text -o sarif=iamsentry.sarif
+```
+
+Give a format a `=file` to send it there instead of stdout. At most one
+output can go to stdout.
 
 - **`text`** (default) — grouped by severity, `file:line (object)`.
 - **`sarif`** — SARIF 2.1.0, for GitHub code scanning
