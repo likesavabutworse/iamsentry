@@ -48,6 +48,13 @@ func (f *capturingAPI) CheckNoPublicAccess(context.Context, *accessanalyzer.Chec
 // treat it as a generic resource policy and fire a spurious
 // MISSING_RESOURCE finding on a standard, valid trust policy (trust
 // policies have no Resource element by design).
+func TestRun_RejectsInvalidFailOnThreshold(t *testing.T) {
+	got := run([]string{"scan", "-no-aws", "-fail-on", "MDEIUM", "../../testdata/sample-role.yaml"})
+	if got != 2 {
+		t.Errorf("run() with an invalid -fail-on value = exit %d, want 2", got)
+	}
+}
+
 func TestRunAccessAnalyzer_RoleTrustPolicyUsesRoleTrustResourceType(t *testing.T) {
 	fake := &capturingAPI{}
 	c := awsval.NewClient(fake)

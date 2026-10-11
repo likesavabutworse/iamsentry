@@ -53,6 +53,20 @@ var severityOrder = map[string]int{
 	SeverityInfo:   4,
 }
 
+const ThresholdNever = "NEVER"
+
+// IsValidThreshold lets callers reject a typo'd -fail-on value up front,
+// instead of it silently taking on ExitCode's fallback-to-SeverityLow
+// behavior.
+func IsValidThreshold(s string) bool {
+	s = strings.ToUpper(s)
+	if s == ThresholdNever {
+		return true
+	}
+	_, ok := severityOrder[s]
+	return ok
+}
+
 // NormalizeAccessAnalyzerSeverity maps the two distinct vocabularies the
 // four Access Analyzer operations use (ValidatePolicy's FindingType; the
 // three custom checks' fixed "FAIL") onto the shared scale.
@@ -227,8 +241,13 @@ func formatResult(r Result, color bool) string {
 
 // ExitCode returns 1 if any Result meets or exceeds threshold, else 0.
 // threshold is one of the Severity* constants; an unrecognized threshold is
-// treated as SeverityLow (fail on anything but info).
+// treated as SeverityLow (fail on anything but info) — callers should
+// validate with IsValidThreshold up front rather than rely on that fallback.
 func ExitCode(results []Result, threshold string) int {
+	threshold = strings.ToUpper(threshold)
+	if threshold == ThresholdNever {
+		return 0
+	}
 	thresholdRank, ok := severityOrder[threshold]
 	if !ok {
 		thresholdRank = severityOrder[SeverityLow]

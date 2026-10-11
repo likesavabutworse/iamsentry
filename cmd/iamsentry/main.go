@@ -50,7 +50,7 @@ func run(args []string) int {
 	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
 	noAWS := fs.Bool("no-aws", false, "disable the AWS Access Analyzer layer (local Rego checks only)")
 	rulesDir := fs.String("rules-dir", "", "directory of additional user-supplied .rego rules")
-	threshold := fs.String("fail-on", render.SeverityLow, "minimum severity that causes a non-zero exit (ERROR|HIGH|MEDIUM|LOW|INFO)")
+	threshold := fs.String("fail-on", render.SeverityLow, "minimum severity that causes a non-zero exit (ERROR|HIGH|MEDIUM|LOW|INFO|never)")
 	noColor := fs.Bool("no-color", false, "disable ANSI color in output")
 	var outputSpecs outputFlag
 	fs.Var(&outputSpecs, "o", "output format[=file]: text, sarif, or github (repeatable; at most one without a file, which goes to stdout)")
@@ -60,6 +60,10 @@ func run(args []string) int {
 	denyListFile := fs.String("deny-list", "", "path to a CheckAccessNotGranted deny-list YAML file — see denylist/examples/example.yaml. No default; off unless given")
 	denyListDir := fs.String("deny-list-dir", "", "directory of deny-list YAML files, merged (mutually exclusive with --deny-list)")
 	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if !render.IsValidThreshold(*threshold) {
+		fmt.Fprintf(os.Stderr, "error: invalid -fail-on %q (want ERROR, HIGH, MEDIUM, LOW, INFO, or never)\n", *threshold)
 		return 2
 	}
 	if fs.NArg() != 1 {
@@ -435,7 +439,7 @@ Usage:
 Flags:
   -no-aws            disable the AWS Access Analyzer layer (local Rego checks only)
   -rules-dir dir     directory of additional user-supplied .rego rules
-  -fail-on level     minimum severity that causes a non-zero exit (default LOW)
+  -fail-on level     minimum severity that causes a non-zero exit, or "never" to always exit 0 (default LOW)
   -no-color          disable ANSI color in output
   -o, -output fmt[=file]  output format[=file]: text (default), sarif, or github (Actions
                       annotations); repeatable, at most one without a file (goes to stdout)

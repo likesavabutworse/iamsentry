@@ -53,7 +53,7 @@ iamsentry scan [flags] <file-or-directory>
 
   -no-aws            disable the AWS Access Analyzer layer (local Rego checks only)
   -rules-dir dir     directory of additional user-supplied .rego rules
-  -fail-on level     minimum severity that causes a non-zero exit (default LOW)
+  -fail-on level     minimum severity that causes a non-zero exit, or "never" to always exit 0 (default LOW)
   -no-color          disable ANSI color in output
   -o, -output fmt[=file]  output format[=file]: text (default), sarif, or github (Actions
                       annotations); repeatable, at most one without a file (goes to stdout)

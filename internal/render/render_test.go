@@ -30,3 +30,26 @@ func TestExitCode_ThresholdRespectsSeverityOrder(t *testing.T) {
 		t.Errorf("a LOW finding must fail a LOW threshold, got exit %d", got)
 	}
 }
+
+func TestIsValidThreshold(t *testing.T) {
+	for _, s := range []string{"ERROR", "high", "Medium", "LOW", "info", "never", "NEVER"} {
+		if !IsValidThreshold(s) {
+			t.Errorf("IsValidThreshold(%q) = false, want true", s)
+		}
+	}
+	for _, s := range []string{"MDEIUM", "CRITICAL", "", "none", "off"} {
+		if IsValidThreshold(s) {
+			t.Errorf("IsValidThreshold(%q) = true, want false", s)
+		}
+	}
+}
+
+func TestExitCode_NeverAlwaysExitsZero(t *testing.T) {
+	results := []Result{{Severity: SeverityError}}
+	if got := ExitCode(results, "never"); got != 0 {
+		t.Errorf("fail-on never must exit 0 even with an ERROR finding, got exit %d", got)
+	}
+	if got := ExitCode(results, "NEVER"); got != 0 {
+		t.Errorf("fail-on never must be case-insensitive, got exit %d", got)
+	}
+}
