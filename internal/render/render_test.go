@@ -7,6 +7,17 @@ import (
 	"github.com/likesavabutworse/iamsentry/internal/input"
 )
 
+func TestNormalizeRegoSeverity_DefersToRulesPackage(t *testing.T) {
+	if got := NormalizeRegoSeverity("high"); got != SeverityHigh {
+		t.Errorf("NormalizeRegoSeverity(%q) = %q, want %q", "high", got, SeverityHigh)
+	}
+	// rules.Evaluate already rejects this before producing a Violation;
+	// the fallback here is defensive only.
+	if got := NormalizeRegoSeverity("not-a-real-severity"); got != SeverityMedium {
+		t.Errorf("NormalizeRegoSeverity on an unrecognized value = %q, want defensive fallback %q", got, SeverityMedium)
+	}
+}
+
 func TestFromAccessAnalyzer_RuleIDPrefersIssueCode(t *testing.T) {
 	findings := []awsval.Finding{
 		{Check: "ValidatePolicy", IssueCode: "SecurityWarningPassRoleWithStarInResource"},

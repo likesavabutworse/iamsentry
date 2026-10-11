@@ -91,25 +91,16 @@ func NormalizeAccessAnalyzerSeverity(s string) string {
 	}
 }
 
-// NormalizeRegoSeverity maps a rule's freeform severity string (rule
-// authors write "high"/"medium"/"low"/"info", case-insensitive) onto the
-// shared scale. Unrecognized values fall back to medium rather than being
-// dropped, so a typo in a custom rule doesn't silently disappear.
+// NormalizeRegoSeverity maps a rule's freeform severity string onto the
+// shared scale, deferring to rules.NormalizeSeverity for the vocabulary so
+// it can't drift out of sync with what rules.Evaluate accepts. The
+// fallback to medium for an unrecognized value is defensive only —
+// rules.Evaluate already rejects those before a Violation is produced.
 func NormalizeRegoSeverity(s string) string {
-	switch strings.ToLower(s) {
-	case "critical", "error":
-		return SeverityError
-	case "high":
-		return SeverityHigh
-	case "medium", "":
-		return SeverityMedium
-	case "low":
-		return SeverityLow
-	case "info", "informational", "suggestion":
-		return SeverityInfo
-	default:
-		return SeverityMedium
+	if b := rules.NormalizeSeverity(s); b != "" {
+		return b
 	}
+	return SeverityMedium
 }
 
 // FromAccessAnalyzer converts awsval.Findings for one policy document of a

@@ -4,7 +4,11 @@
 //
 // Contract: every rule bundle is a Rego package under iamsentry.rules that
 // sets a `deny` array. Each element must be an object with at least "msg"
-// and "rule_id"; "severity" defaults to "medium" when absent. This package
+// and "rule_id"; "severity" defaults to "medium" when absent, and must
+// otherwise be one of NormalizeSeverity's recognized values — an
+// unrecognized severity string is a hard failure, same as a missing msg or
+// rule_id, since silently defaulting it could let a finding land under a
+// less severe -fail-on bucket than the rule author intended. This package
 // makes no assumption about how many rules exist — zero is valid and simply
 // yields zero findings. rule_id must be unique across every loaded rule,
 // builtin and user-supplied alike — passing opa test in an upstream rules
@@ -26,6 +30,30 @@ import (
 )
 
 const rootPackage = "iamsentry.rules"
+
+// regoSeverityBuckets is the single source of truth for which raw severity
+// strings a deny entry may use (case-insensitive) and which canonical
+// bucket each belongs to. Bucket names match render.Severity* exactly
+// (render has no way to import this package's constants without a cycle,
+// since render already imports rules — it calls NormalizeSeverity instead
+// of keeping its own copy of this table).
+var regoSeverityBuckets = map[string]string{
+	"critical":      "ERROR",
+	"error":         "ERROR",
+	"high":          "HIGH",
+	"medium":        "MEDIUM",
+	"low":           "LOW",
+	"info":          "INFO",
+	"informational": "INFO",
+	"suggestion":    "INFO",
+}
+
+// NormalizeSeverity maps a rule's freeform severity string onto one of the
+// canonical buckets ("ERROR", "HIGH", "MEDIUM", "LOW", "INFO"), or "" if s
+// isn't a recognized value.
+func NormalizeSeverity(s string) string {
+	return regoSeverityBuckets[strings.ToLower(s)]
+}
 
 // Violation is one `deny` entry produced by a rule.
 type Violation struct {
@@ -140,6 +168,9 @@ func toViolation(item any) (Violation, error) {
 		return Violation{}, fmt.Errorf("rule deny entry missing required \"rule_id\" field: %#v", item)
 	}
 	if s, ok := m["severity"].(string); ok && s != "" {
+		if NormalizeSeverity(s) == "" {
+			return Violation{}, fmt.Errorf("rule %q has deny entry with unrecognized severity %q (want one of critical, error, high, medium, low, info, informational, suggestion)", v.RuleID, s)
+		}
 		v.Severity = s
 	}
 	return v, nil

@@ -10,6 +10,22 @@ import (
 	"github.com/likesavabutworse/iamsentry/internal/policy"
 )
 
+func TestNormalizeSeverity(t *testing.T) {
+	cases := map[string]string{
+		"critical": "ERROR", "CRITICAL": "ERROR", "error": "ERROR",
+		"high":   "HIGH",
+		"medium": "MEDIUM",
+		"low":    "LOW",
+		"info":   "INFO", "informational": "INFO", "suggestion": "INFO",
+		"": "", "critial": "", "banana": "",
+	}
+	for in, want := range cases {
+		if got := NormalizeSeverity(in); got != want {
+			t.Errorf("NormalizeSeverity(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestBuiltinSourcesLoad(t *testing.T) {
 	sources, err := BuiltinSources()
 	if err != nil {
@@ -96,6 +112,30 @@ deny[v] {
 	}
 	if _, err := eng.Evaluate(ctx, map[string]any{}); err == nil {
 		t.Fatal("expected an error for a deny entry missing rule_id, got nil")
+	}
+}
+
+func TestEngine_UnrecognizedSeverityIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	rule := `
+package iamsentry.rules
+
+deny[v] {
+	input.kind == "RawPolicy"
+	v := {"rule_id": "test.typo_severity", "msg": "test violation", "severity": "critial"}
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "typo.rego"), []byte(rule), 0o644); err != nil {
+		t.Fatalf("writing rule: %v", err)
+	}
+
+	ctx := context.Background()
+	eng, err := NewEngine(ctx, nil, dir)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	if _, err := eng.Evaluate(ctx, map[string]any{"kind": "RawPolicy"}); err == nil {
+		t.Fatal("expected an error for an unrecognized severity value, got nil")
 	}
 }
 
