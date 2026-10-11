@@ -99,6 +99,41 @@ deny[v] {
 	}
 }
 
+func TestEngine_DuplicateRuleIDIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	ruleA := `
+package iamsentry.rules
+
+deny[v] {
+	input.kind == "RawPolicy"
+	v := {"rule_id": "shared.id", "msg": "from rule A", "severity": "high"}
+}
+`
+	ruleB := `
+package iamsentry.rules
+
+deny[v] {
+	input.kind == "RawPolicy"
+	v := {"rule_id": "shared.id", "msg": "from rule B", "severity": "low"}
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "a.rego"), []byte(ruleA), 0o644); err != nil {
+		t.Fatalf("writing rule: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "b.rego"), []byte(ruleB), 0o644); err != nil {
+		t.Fatalf("writing rule: %v", err)
+	}
+
+	ctx := context.Background()
+	eng, err := NewEngine(ctx, nil, dir)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	if _, err := eng.Evaluate(ctx, map[string]any{"kind": "RawPolicy"}); err == nil {
+		t.Fatal("expected an error when two rules share a rule_id with different content, got nil")
+	}
+}
+
 // TestExampleRules exercises rules/examples/*.rego against representative
 // input, both as a smoke test for the example content and as an end-to-end
 // check of the input.Object -> ToInput -> Evaluate path.

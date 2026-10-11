@@ -6,7 +6,11 @@
 // sets a `deny` array. Each element must be an object with at least "msg"
 // and "rule_id"; "severity" defaults to "medium" when absent. This package
 // makes no assumption about how many rules exist — zero is valid and simply
-// yields zero findings.
+// yields zero findings. rule_id must be unique across every loaded rule,
+// builtin and user-supplied alike — passing opa test in an upstream rules
+// repo doesn't guarantee this, since a rule's own tests typically only
+// trigger that rule's own condition, so Evaluate checks for collisions
+// itself and fails the run if it finds one.
 package rules
 
 import (
@@ -94,7 +98,29 @@ func (e *Engine) Evaluate(ctx context.Context, input map[string]any) ([]Violatio
 			}
 		}
 	}
+	if err := checkDuplicateRuleIDs(violations); err != nil {
+		return nil, err
+	}
 	return violations, nil
+}
+
+// checkDuplicateRuleIDs fails loudly when two deny entries share a rule_id
+// but differ in msg or severity. deny is a Rego set, so OPA has already
+// collapsed any byte-identical entries by the time they reach here — a
+// surviving pair sharing a rule_id is always two different rules that
+// collided on the same ID, not the same rule firing twice. Left unchecked,
+// this would corrupt suppression matching, since suppressions key on
+// rule_id alone (see internal/suppress).
+func checkDuplicateRuleIDs(violations []Violation) error {
+	seen := make(map[string]Violation, len(violations))
+	for _, v := range violations {
+		if prev, ok := seen[v.RuleID]; ok {
+			return fmt.Errorf("rule_id %q is used by more than one rule: %q (%s) vs %q (%s)",
+				v.RuleID, prev.Msg, prev.Severity, v.Msg, v.Severity)
+		}
+		seen[v.RuleID] = v
+	}
+	return nil
 }
 
 func toViolation(item any) (Violation, error) {
