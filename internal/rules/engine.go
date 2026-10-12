@@ -177,7 +177,7 @@ func toViolation(item any) (Violation, error) {
 	} else {
 		return Violation{}, fmt.Errorf("rule deny entry missing required \"rule_id\" field: %#v", item)
 	}
-	if s, ok := m["severity"].(string); ok && s != "" {
+	if s, ok := m["severity"].(string); ok {
 		if NormalizeSeverity(s) == "" {
 			return Violation{}, fmt.Errorf("rule %q has deny entry with unrecognized severity %q (want one of critical, error, high, medium, low, info, informational, suggestion)", v.RuleID, s)
 		}

@@ -139,6 +139,30 @@ deny[v] {
 	}
 }
 
+func TestEngine_EmptySeverityIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	rule := `
+package iamsentry.rules
+
+deny[v] {
+	input.kind == "RawPolicy"
+	v := {"rule_id": "test.empty_severity", "msg": "test violation", "severity": ""}
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "empty.rego"), []byte(rule), 0o644); err != nil {
+		t.Fatalf("writing rule: %v", err)
+	}
+
+	ctx := context.Background()
+	eng, err := NewEngine(ctx, nil, dir)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	if _, err := eng.Evaluate(ctx, map[string]any{"kind": "RawPolicy"}); err == nil {
+		t.Fatal("expected an error for an explicit empty-string severity, got nil")
+	}
+}
+
 func TestEngine_DuplicateRuleIDIsAnError(t *testing.T) {
 	dir := t.TempDir()
 	ruleA := `
