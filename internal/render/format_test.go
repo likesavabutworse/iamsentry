@@ -70,7 +70,9 @@ func TestWriteGitHub(t *testing.T) {
 		{Source: SourceAccessAnalyzer, RuleID: "X", Severity: SeverityLow, Message: "m", SourceFile: "p.json"},
 	}
 	var buf bytes.Buffer
-	WriteGitHub(&buf, results)
+	if err := WriteGitHub(&buf, results); err != nil {
+		t.Fatal(err)
+	}
 
 	want := "::warning file=a%2Cb.yaml,line=7,title=MEDIUM [rego%3Arule.a]::50%25 of, things: bad%0Ahttps://x\n" +
 		"::notice file=p.json,title=LOW [access-analyzer%3AX]::m\n"

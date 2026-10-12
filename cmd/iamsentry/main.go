@@ -289,11 +289,9 @@ func (o output) write(stdout io.Writer, results []render.Result, noColor bool) (
 	case "sarif":
 		return render.WriteSARIF(w, results)
 	case "github":
-		render.WriteGitHub(w, results)
-		return nil
+		return render.WriteGitHub(w, results)
 	default:
-		render.Write(w, results, useColor(w, noColor))
-		return nil
+		return render.Write(w, results, useColor(w, noColor))
 	}
 }
 

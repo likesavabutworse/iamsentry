@@ -157,7 +157,7 @@ func scanFile(f string) ([]Object, []Skipped, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening %s: %w", f, err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	dec := yaml.NewDecoder(file)
 	var objects []Object

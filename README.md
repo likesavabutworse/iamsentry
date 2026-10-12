@@ -203,7 +203,12 @@ What this interface guarantees:
 - **`rule_id` is a stable identifier**: it's what suppressions (file, 
   CRD annotation, and `--ignore`) match against. Renaming a `rule_id` 
   silently orphans every existing suppression for it. 
+- **Rego syntax defaults to v0** keeping existing `--rules-dir` modules
+  compiling unchanged. A module that wants v1 syntax can opt in on a 
+  per-file basis with `import rego.v1` at the top. OPA parses that 
+  module as v1 while every other module keeps using v0.
 
+  
 ## Exit codes & severity
 
 A scan ends in exactly one of three outcomes:

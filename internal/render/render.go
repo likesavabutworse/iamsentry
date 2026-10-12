@@ -183,10 +183,10 @@ var severityColor = map[string]string{
 
 // Write renders results grouped by severity to w. color disables ANSI codes
 // when false (e.g. non-terminal CI log output).
-func Write(w io.Writer, results []Result, color bool) {
+func Write(w io.Writer, results []Result, color bool) error {
 	if len(results) == 0 {
-		fmt.Fprintln(w, "No findings.")
-		return
+		_, err := fmt.Fprintln(w, "No findings.")
+		return err
 	}
 
 	Sort(results)
@@ -194,13 +194,20 @@ func Write(w io.Writer, results []Result, color bool) {
 	var lastSeverity string
 	for _, r := range results {
 		if r.Severity != lastSeverity {
-			fmt.Fprintln(w)
-			fmt.Fprintln(w, sevHeading(r.Severity, color))
+			if _, err := fmt.Fprintln(w); err != nil {
+				return err
+			}
+			if _, err := fmt.Fprintln(w, sevHeading(r.Severity, color)); err != nil {
+				return err
+			}
 			lastSeverity = r.Severity
 		}
-		fmt.Fprint(w, formatResult(r, color))
+		if _, err := fmt.Fprint(w, formatResult(r, color)); err != nil {
+			return err
+		}
 	}
-	fmt.Fprintln(w)
+	_, err := fmt.Fprintln(w)
+	return err
 }
 
 func sevHeading(severity string, color bool) string {

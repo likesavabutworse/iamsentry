@@ -26,7 +26,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/open-policy-agent/opa/rego"
+	"github.com/open-policy-agent/opa/v1/ast"
+	"github.com/open-policy-agent/opa/v1/rego"
 )
 
 const rootPackage = "iamsentry.rules"
@@ -90,6 +91,13 @@ func NewEngine(ctx context.Context, builtins []Source, userRulesDir string) (*En
 
 	opts := []func(*rego.Rego){
 		rego.Query(fmt.Sprintf("data.%s.deny", rootPackage)),
+		// Keep v0 syntax so existing builtin, example, and user-supplied
+		// rule bundles (none of which use `if`/`contains`) keep compiling
+		// after the opa/rego -> opa/v1/rego import switch. A module that
+		// wants v1 syntax can still opt in per-file with `import rego.v1`;
+		// OPA parses that module as v1 while this default applies to
+		// everything else, so both styles coexist across a --rules-dir.
+		rego.SetRegoVersion(ast.RegoV0),
 	}
 	for _, m := range modules {
 		opts = append(opts, rego.Module(m.Name, m.Body))

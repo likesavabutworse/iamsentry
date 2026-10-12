@@ -10,7 +10,7 @@ import (
 // (::error/::warning/::notice), which GitHub shows as inline annotations
 // on the PR diff and in the job summary. No upload step or GitHub Advanced
 // Security needed, unlike SARIF.
-func WriteGitHub(w io.Writer, results []Result) {
+func WriteGitHub(w io.Writer, results []Result) error {
 	Sort(results)
 	for _, r := range results {
 		props := []string{"file=" + escapeGitHubProperty(r.SourceFile)}
@@ -23,8 +23,11 @@ func WriteGitHub(w io.Writer, results []Result) {
 		if r.LearnMore != "" {
 			msg += "\n" + r.LearnMore
 		}
-		fmt.Fprintf(w, "::%s %s::%s\n", githubLevel(r.Severity), strings.Join(props, ","), escapeGitHubData(msg))
+		if _, err := fmt.Fprintf(w, "::%s %s::%s\n", githubLevel(r.Severity), strings.Join(props, ","), escapeGitHubData(msg)); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func githubLevel(severity string) string {
