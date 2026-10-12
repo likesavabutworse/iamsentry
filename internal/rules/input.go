@@ -10,13 +10,13 @@ import (
 
 // regoInput is the stable, documented shape every rule (built-in or
 // user-supplied) sees as `input`. Field names here are the public contract
-// for rule authors — see rules/examples/*.rego for usage.
+// for rule authors — see examples/*.rego for usage.
 type regoInput struct {
 	Kind       string `json:"kind"`
 	Name       string `json:"name,omitempty"`
 	SourceFile string `json:"source_file"`
 	// Tags is deliberately not omitempty: rules like
-	// rules/examples/required_owner_tag.rego call object.get(input.tags, ...),
+	// examples/required_owner_tag.rego call object.get(input.tags, ...),
 	// which is undefined (not "") when input.tags is absent — so an object
 	// with no tags must still serialize as {} rather than dropping the key.
 	Tags               map[string]string          `json:"tags"`

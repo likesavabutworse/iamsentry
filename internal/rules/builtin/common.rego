@@ -3,7 +3,7 @@
 # user-supplied --rules-dir module: every module (built-in and user) shares
 # one iamsentry.rules package/namespace, so a generic name like `statements`
 # here would silently merge with an identically-named partial set in
-# user content. See rules/examples/*.rego for the user-facing convention
+# user content. See examples/*.rego for the user-facing convention
 # (those use a plain `statements` name deliberately, since they're templates
 # the user copies and owns outright, not something that ships alongside
 # arbitrary third-party rules by default).

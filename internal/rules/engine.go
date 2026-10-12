@@ -133,18 +133,28 @@ func (e *Engine) Evaluate(ctx context.Context, input map[string]any) ([]Violatio
 }
 
 // checkDuplicateRuleIDs fails loudly when two deny entries share a rule_id
-// but differ in msg or severity. deny is a Rego set, so OPA has already
-// collapsed any byte-identical entries by the time they reach here — a
-// surviving pair sharing a rule_id is always two different rules that
-// collided on the same ID, not the same rule firing twice. Left unchecked,
-// this would corrupt suppression matching, since suppressions key on
-// rule_id alone (see internal/suppress).
+// but resolve to different severities. A single rule firing once per
+// matched statement (e.g. each built-in rule's msg embeds the statement's
+// Sid) is normal and must not trip this — Violation carries no provenance
+// back to which rule/module produced it, so msg differing alone can't
+// distinguish "one rule, multiple statements" from "two rules colliding
+// on one ID." A severity mismatch under the same rule_id is the one
+// signal checkable at this layer without that provenance, and it's the
+// one that actually matters: suppress.Set matches on rule_id alone (see
+// internal/suppress), so a suppression entry meant to silence one
+// severity's worth of findings would silently also silence the other's.
+// This can still miss two genuinely different rules that collide on
+// both rule_id and severity — closing that gap needs static analysis of
+// the loaded Rego source, not a runtime check on its output.
 func checkDuplicateRuleIDs(violations []Violation) error {
 	seen := make(map[string]Violation, len(violations))
 	for _, v := range violations {
 		if prev, ok := seen[v.RuleID]; ok {
-			return fmt.Errorf("rule_id %q is used by more than one rule: %q (%s) vs %q (%s)",
-				v.RuleID, prev.Msg, prev.Severity, v.Msg, v.Severity)
+			if NormalizeSeverity(prev.Severity) != NormalizeSeverity(v.Severity) {
+				return fmt.Errorf("rule_id %q is used by more than one rule with different severities: %q (%s) vs %q (%s)",
+					v.RuleID, prev.Msg, prev.Severity, v.Msg, v.Severity)
+			}
+			continue
 		}
 		seen[v.RuleID] = v
 	}

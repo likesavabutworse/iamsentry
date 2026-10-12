@@ -57,7 +57,7 @@ func run(args []string) int {
 	fs.Var(&outputSpecs, "output", "same as -o")
 	suppressionsPath := fs.String("suppressions", "", "path to a suppressions YAML file (default: "+suppress.DefaultFileName+" in the current directory, if present)")
 	ignore := fs.String("ignore", "", "comma-separated rule_ids to ignore for this run (not scoped, not reasoned — for transient local overrides, not for committing)")
-	denyListFile := fs.String("deny-list", "", "path to a CheckAccessNotGranted deny-list YAML file — see denylist/examples/example.yaml. No default; off unless given")
+	denyListFile := fs.String("deny-list", "", "path to a CheckAccessNotGranted deny-list YAML file — see examples/denylist-example.yaml. No default; off unless given")
 	denyListDir := fs.String("deny-list-dir", "", "directory of deny-list YAML files, merged (mutually exclusive with --deny-list)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
@@ -317,6 +317,35 @@ func splitCommaList(s string) []string {
 // on obj: the trust policy and each inline policy for a Role, or the single
 // document for a Policy/RawPolicy. The other three Access Analyzer
 // operations aren't called here — see README's "Future extensions".
+// locatedDoc pairs a policy document with where it came from, for findings
+// that need to report a source line.
+type locatedDoc struct {
+	doc *policy.Document
+	loc input.PolicyLocation
+}
+
+// identityPolicyDocuments returns obj's identity-policy documents: the
+// single document for a Policy/RawPolicy, or every inline policy for a
+// Role. Never a Role's trust policy — that's a resource policy with its
+// own distinct handling in runAccessAnalyzer, and deny-list entries are
+// about permission grants, not "who can assume this role" (see
+// runDenyListChecks's doc comment). Shared so the two callers can't drift
+// apart on what "this object's permission documents" means.
+func identityPolicyDocuments(obj input.Object) []locatedDoc {
+	switch obj.Kind {
+	case input.KindRawPolicy, input.KindPolicy:
+		return []locatedDoc{{obj.Document, obj.DocumentLocation}}
+	case input.KindRole:
+		docs := make([]locatedDoc, 0, len(obj.InlinePolicies))
+		for name, inline := range obj.InlinePolicies {
+			d := inline
+			docs = append(docs, locatedDoc{&d, obj.InlinePolicyLocations[name]})
+		}
+		return docs
+	}
+	return nil
+}
+
 func runAccessAnalyzer(ctx context.Context, c *awsval.Client, obj input.Object) ([]render.Result, error) {
 	var all []render.Result
 
@@ -336,12 +365,7 @@ func runAccessAnalyzer(ctx context.Context, c *awsval.Client, obj input.Object) 
 		return nil
 	}
 
-	switch obj.Kind {
-	case input.KindRawPolicy, input.KindPolicy:
-		if err := check(obj.Document, obj.DocumentLocation, types.PolicyTypeIdentityPolicy, ""); err != nil {
-			return nil, err
-		}
-	case input.KindRole:
+	if obj.Kind == input.KindRole {
 		// A trust policy has no Resource element by design — telling
 		// ValidatePolicy it's specifically a role trust policy (rather than
 		// a generic resource policy) is what suppresses the otherwise
@@ -351,11 +375,10 @@ func runAccessAnalyzer(ctx context.Context, c *awsval.Client, obj input.Object) 
 		if err := check(obj.AssumeRolePolicy, obj.AssumeRolePolicyLocation, types.PolicyTypeResourcePolicy, types.ValidatePolicyResourceTypeRoleTrust); err != nil {
 			return nil, err
 		}
-		for name, inline := range obj.InlinePolicies {
-			d := inline
-			if err := check(&d, obj.InlinePolicyLocations[name], types.PolicyTypeIdentityPolicy, ""); err != nil {
-				return nil, err
-			}
+	}
+	for _, ld := range identityPolicyDocuments(obj) {
+		if err := check(ld.doc, ld.loc, types.PolicyTypeIdentityPolicy, ""); err != nil {
+			return nil, err
 		}
 	}
 	return all, nil
@@ -380,20 +403,7 @@ func runDenyListChecks(ctx context.Context, c *awsval.Client, obj input.Object, 
 		return nil, nil
 	}
 
-	type locatedDoc struct {
-		doc *policy.Document
-		loc input.PolicyLocation
-	}
-	var docs []locatedDoc
-	switch obj.Kind {
-	case input.KindRawPolicy, input.KindPolicy:
-		docs = []locatedDoc{{obj.Document, obj.DocumentLocation}}
-	case input.KindRole:
-		for name, inline := range obj.InlinePolicies {
-			d := inline
-			docs = append(docs, locatedDoc{&d, obj.InlinePolicyLocations[name]})
-		}
-	}
+	docs := identityPolicyDocuments(obj)
 
 	var all []render.Result
 	for _, ld := range docs {

@@ -170,17 +170,50 @@ deny[v] {
 		t.Fatalf("NewEngine: %v", err)
 	}
 	if _, err := eng.Evaluate(ctx, map[string]any{"kind": "RawPolicy"}); err == nil {
-		t.Fatal("expected an error when two rules share a rule_id with different content, got nil")
+		t.Fatal("expected an error when two rules share a rule_id with different severities, got nil")
 	}
 }
 
-// TestExampleRules exercises rules/examples/*.rego against representative
+// TestEngine_SameRuleFiringPerStatementIsNotADuplicate guards against a
+// regression where checkDuplicateRuleIDs mistook one rule firing once per
+// matched statement (same rule_id and severity, different msg — the
+// built-in rules all embed the statement's Sid in msg) for two different
+// rules colliding on the same rule_id.
+func TestEngine_SameRuleFiringPerStatementIsNotADuplicate(t *testing.T) {
+	dir := t.TempDir()
+	rule := `
+package iamsentry.rules
+
+deny[v] {
+	stmt := input.statements[_]
+	v := {"rule_id": "shared.id", "msg": sprintf("statement %v", [stmt]), "severity": "high"}
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, "a.rego"), []byte(rule), 0o644); err != nil {
+		t.Fatalf("writing rule: %v", err)
+	}
+
+	ctx := context.Background()
+	eng, err := NewEngine(ctx, nil, dir)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	violations, err := eng.Evaluate(ctx, map[string]any{"statements": []any{"A", "B"}})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if len(violations) != 2 {
+		t.Fatalf("expected 2 violations (one per statement), got %v", violations)
+	}
+}
+
+// TestExampleRules exercises examples/*.rego against representative
 // input, both as a smoke test for the example content and as an end-to-end
 // check of the input.Object -> ToInput -> Evaluate path.
 func TestExampleRules(t *testing.T) {
-	examplesDir := filepath.Join("..", "..", "rules", "examples")
+	examplesDir := filepath.Join("..", "..", "examples")
 	if _, err := os.Stat(examplesDir); err != nil {
-		t.Skipf("rules/examples not found relative to test: %v", err)
+		t.Skipf("examples not found relative to test: %v", err)
 	}
 
 	ctx := context.Background()

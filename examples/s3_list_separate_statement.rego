@@ -9,16 +9,20 @@
 # adjust the object-action list for your conventions.
 package iamsentry.rules
 
-OBJECT_ACTIONS := {"s3:GetObject", "s3:PutObject", "s3:DeleteObject"}
+OBJECT_ACTIONS := {"s3:getobject", "s3:putobject", "s3:deleteobject"}
 
 deny[v] {
 	stmt := statements[_]
-	actions := {a | a := stmt.Action[_]}
-	actions["s3:ListBucket"]
-	count(actions & OBJECT_ACTIONS) > 0
+	# Match case-insensitively, same as every built-in rule (IAM action
+	# names aren't case-sensitive) — "S3:ListBucket" must trip this the
+	# same as "s3:listbucket".
+	lowered := {lower(a) | a := stmt.Action[_]}
+	lowered["s3:listbucket"]
+	matched := {a | a := stmt.Action[_]; OBJECT_ACTIONS[lower(a)]}
+	count(matched) > 0
 	v := {
 		"rule_id": "example.s3.list_bucket_separate_statement",
-		"msg": sprintf("statement %q mixes s3:ListBucket with object-level actions %v — use separate statements", [object.get(stmt, "Sid", "<no Sid>"), actions & OBJECT_ACTIONS]),
+		"msg": sprintf("statement %q mixes s3:ListBucket with object-level actions %v — use separate statements", [object.get(stmt, "Sid", "<no Sid>"), matched]),
 		"severity": "low",
 	}
 }

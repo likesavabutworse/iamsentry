@@ -94,9 +94,9 @@ deny:
 }
 
 func TestLoad_ExampleFileIsValid(t *testing.T) {
-	// denylist/examples/example.yaml is a shipped, documented template —
+	// examples/denylist-example.yaml is a shipped, documented template —
 	// it must always parse and validate cleanly.
-	entries, err := Load(filepath.Join("..", "..", "denylist", "examples", "example.yaml"))
+	entries, err := Load(filepath.Join("..", "..", "examples", "denylist-example.yaml"))
 	if err != nil {
 		t.Fatalf("Load(examples/example.yaml): %v", err)
 	}

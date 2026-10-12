@@ -1,7 +1,7 @@
 // Package denylist loads CheckAccessNotGranted deny-list entries. Purely
 // opt-in: unlike the Rego built-in bundle, there is no default deny list —
 // what's forbidden is an org policy decision, not a universal best
-// practice. See denylist/examples/example.yaml for the format and a
+// practice. See examples/denylist-example.yaml for the format and a
 // worked example of each Access shape.
 package denylist
 
