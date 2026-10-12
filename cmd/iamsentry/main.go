@@ -12,10 +12,12 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/accessanalyzer"
 	"github.com/aws/aws-sdk-go-v2/service/accessanalyzer/types"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/likesavabutworse/iamsentry/internal/awsval"
 	"github.com/likesavabutworse/iamsentry/internal/denylist"
@@ -25,6 +27,12 @@ import (
 	"github.com/likesavabutworse/iamsentry/internal/rules"
 	"github.com/likesavabutworse/iamsentry/internal/suppress"
 )
+
+// awsCallConcurrency is fixed rather than a flag: the AWS SDK's default
+// retryer already absorbs occasional throttling at this scale, and the
+// per-object loop in run stays sequential, so this is the only
+// concurrency knob in the binary.
+const awsCallConcurrency = 8
 
 // suppressAnnotation is the ACK CRD annotation key honored for per-object
 // suppressions — see internal/suppress package doc.
@@ -347,22 +355,33 @@ func identityPolicyDocuments(obj input.Object) []locatedDoc {
 }
 
 func runAccessAnalyzer(ctx context.Context, c *awsval.Client, obj input.Object) ([]render.Result, error) {
-	var all []render.Result
+	var (
+		all []render.Result
+		mu  sync.Mutex
+	)
 
-	check := func(doc *policy.Document, loc input.PolicyLocation, policyType types.PolicyType, resourceType types.ValidatePolicyResourceType) error {
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(awsCallConcurrency)
+
+	check := func(doc *policy.Document, loc input.PolicyLocation, policyType types.PolicyType, resourceType types.ValidatePolicyResourceType) {
 		if doc == nil {
+			return
+		}
+		g.Go(func() error {
+			raw, err := json.Marshal(doc)
+			if err != nil {
+				return err
+			}
+			findings, err := c.ValidatePolicy(gctx, string(raw), policyType, resourceType)
+			if err != nil {
+				return err
+			}
+			results := render.FromAccessAnalyzer(obj.SourceFile, obj.Name, loc, findings)
+			mu.Lock()
+			all = append(all, results...)
+			mu.Unlock()
 			return nil
-		}
-		raw, err := json.Marshal(doc)
-		if err != nil {
-			return err
-		}
-		findings, err := c.ValidatePolicy(ctx, string(raw), policyType, resourceType)
-		if err != nil {
-			return err
-		}
-		all = append(all, render.FromAccessAnalyzer(obj.SourceFile, obj.Name, loc, findings)...)
-		return nil
+		})
 	}
 
 	if obj.Kind == input.KindRole {
@@ -372,14 +391,13 @@ func runAccessAnalyzer(ctx context.Context, c *awsval.Client, obj input.Object) 
 		// spurious MISSING_RESOURCE finding. Confirmed against a live
 		// account: omitting this fired MISSING_RESOURCE on a standard,
 		// valid EKS Pod Identity trust policy.
-		if err := check(obj.AssumeRolePolicy, obj.AssumeRolePolicyLocation, types.PolicyTypeResourcePolicy, types.ValidatePolicyResourceTypeRoleTrust); err != nil {
-			return nil, err
-		}
+		check(obj.AssumeRolePolicy, obj.AssumeRolePolicyLocation, types.PolicyTypeResourcePolicy, types.ValidatePolicyResourceTypeRoleTrust)
 	}
 	for _, ld := range identityPolicyDocuments(obj) {
-		if err := check(ld.doc, ld.loc, types.PolicyTypeIdentityPolicy, ""); err != nil {
-			return nil, err
-		}
+		check(ld.doc, ld.loc, types.PolicyTypeIdentityPolicy, "")
+	}
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 	return all, nil
 }
@@ -398,6 +416,10 @@ func runAccessAnalyzer(ctx context.Context, c *awsval.Client, obj input.Object) 
 // ability to say *which* entry a FAIL belongs to. A FAIL's Finding is
 // tagged with entry.ID via IssueCode (reusing the field ValidatePolicy
 // puts its issue codes in) so it gets a stable, suppressible rule_id.
+//
+// The per-entry calls for a given document run concurrently (bounded by
+// awsCallConcurrency) since nothing about the one-call-per-entry
+// requirement above forces them to run one at a time.
 func runDenyListChecks(ctx context.Context, c *awsval.Client, obj input.Object, entries []denylist.Entry) ([]render.Result, error) {
 	if len(entries) == 0 {
 		return nil, nil
@@ -414,16 +436,29 @@ func runDenyListChecks(ctx context.Context, c *awsval.Client, obj input.Object, 
 		if err != nil {
 			return nil, err
 		}
+
+		var mu sync.Mutex
+		g, gctx := errgroup.WithContext(ctx)
+		g.SetLimit(awsCallConcurrency)
 		for _, entry := range entries {
-			access := []types.Access{{Actions: entry.Actions, Resources: entry.Resources}}
-			findings, err := c.CheckAccessNotGranted(ctx, string(raw), access, types.AccessCheckPolicyTypeIdentityPolicy)
-			if err != nil {
-				return nil, fmt.Errorf("deny-list entry %q: %w", entry.ID, err)
-			}
-			for i := range findings {
-				findings[i].IssueCode = entry.ID
-			}
-			all = append(all, render.FromAccessAnalyzer(obj.SourceFile, obj.Name, ld.loc, findings)...)
+			g.Go(func() error {
+				access := []types.Access{{Actions: entry.Actions, Resources: entry.Resources}}
+				findings, err := c.CheckAccessNotGranted(gctx, string(raw), access, types.AccessCheckPolicyTypeIdentityPolicy)
+				if err != nil {
+					return fmt.Errorf("deny-list entry %q: %w", entry.ID, err)
+				}
+				for i := range findings {
+					findings[i].IssueCode = entry.ID
+				}
+				results := render.FromAccessAnalyzer(obj.SourceFile, obj.Name, ld.loc, findings)
+				mu.Lock()
+				all = append(all, results...)
+				mu.Unlock()
+				return nil
+			})
+		}
+		if err := g.Wait(); err != nil {
+			return nil, err
 		}
 	}
 	return all, nil

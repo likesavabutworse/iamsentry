@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/service/accessanalyzer"
@@ -17,7 +18,12 @@ import (
 // it's called with, so tests can assert exactly what this command sends —
 // the thing a live-only test can't check without an account, and the thing
 // that was actually wrong once already (see the comment in runAccessAnalyzer).
+//
+// mu guards calls/canCalls: runAccessAnalyzer and runDenyListChecks now
+// call the API concurrently, so this fake can be hit from multiple
+// goroutines at once.
 type capturingAPI struct {
+	mu    sync.Mutex
 	calls []*accessanalyzer.ValidatePolicyInput
 
 	canCalls    []*accessanalyzer.CheckAccessNotGrantedInput
@@ -25,11 +31,15 @@ type capturingAPI struct {
 }
 
 func (f *capturingAPI) ValidatePolicy(_ context.Context, in *accessanalyzer.ValidatePolicyInput, _ ...func(*accessanalyzer.Options)) (*accessanalyzer.ValidatePolicyOutput, error) {
+	f.mu.Lock()
 	f.calls = append(f.calls, in)
+	f.mu.Unlock()
 	return &accessanalyzer.ValidatePolicyOutput{}, nil
 }
 func (f *capturingAPI) CheckAccessNotGranted(_ context.Context, in *accessanalyzer.CheckAccessNotGrantedInput, _ ...func(*accessanalyzer.Options)) (*accessanalyzer.CheckAccessNotGrantedOutput, error) {
+	f.mu.Lock()
 	f.canCalls = append(f.canCalls, in)
+	f.mu.Unlock()
 	if f.canResponse != nil {
 		return f.canResponse(in), nil
 	}
