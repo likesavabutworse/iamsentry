@@ -88,6 +88,7 @@ func LoadDir(dir string) ([]Entry, error) {
 }
 
 func validate(path string, entries []Entry) error {
+	seen := map[string]bool{}
 	for i, e := range entries {
 		if e.ID == "" {
 			return fmt.Errorf("%s: entry #%d has no id", path, i+1)
@@ -95,6 +96,10 @@ func validate(path string, entries []Entry) error {
 		if len(e.Actions) == 0 && len(e.Resources) == 0 {
 			return fmt.Errorf("%s: entry %q has neither actions nor resources", path, e.ID)
 		}
+		if seen[e.ID] {
+			return fmt.Errorf("%s: duplicate deny-list id %q", path, e.ID)
+		}
+		seen[e.ID] = true
 	}
 	return nil
 }

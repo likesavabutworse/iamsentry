@@ -63,6 +63,20 @@ deny:
 	}
 }
 
+func TestLoad_DuplicateIDWithinFileIsRejected(t *testing.T) {
+	dir := t.TempDir()
+	p := writeFile(t, dir, "deny.yaml", `
+deny:
+  - id: rule-a
+    actions: ["s3:DeleteBucket"]
+  - id: rule-a
+    actions: ["s3:PutBucketPolicy"]
+`)
+	if _, err := Load(p); err == nil {
+		t.Fatal("expected an error for a duplicate id within one file, got nil")
+	}
+}
+
 func TestLoadDir_MergesFilesAndRejectsDuplicateIDs(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "a.yaml", `
