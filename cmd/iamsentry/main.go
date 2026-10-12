@@ -250,6 +250,7 @@ type output struct{ format, path string }
 func parseOutputs(specs []string) ([]output, error) {
 	var outs []output
 	toStdout := 0
+	seenPaths := map[string]string{} // path -> format that claimed it
 	for _, s := range specs {
 		format, path, _ := strings.Cut(s, "=")
 		switch format {
@@ -259,6 +260,10 @@ func parseOutputs(specs []string) ([]output, error) {
 		}
 		if path == "" {
 			toStdout++
+		} else if other, ok := seenPaths[path]; ok {
+			return nil, fmt.Errorf("-o %q: %s already writes to %s; each output needs its own file", s, other, path)
+		} else {
+			seenPaths[path] = format
 		}
 		outs = append(outs, output{format, path})
 	}
