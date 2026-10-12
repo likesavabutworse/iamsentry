@@ -1,12 +1,12 @@
 # iamsentry
 
-A CLI that scans rendered IAM policy documents — raw IAM policy JSON, or ACK
-`iam.services.k8s.aws` `Role`/`Policy` CRDs against two independent,
+A CLI that scans rendered IAM policy documents (raw IAM policy JSON, or ACK
+`iam.services.k8s.aws` `Role`/`Policy` CRDs) against two independent,
 separately-toggleable check layers:
 
-1. **AWS IAM Access Analyzer** (`ValidatePolicy`) -- live AWS API calls, on by
+1. **AWS IAM Access Analyzer** (`ValidatePolicy`): live AWS API calls, on by
    default.
-2. **A local Rego rule engine** -- best-practices and custom rules, no AWS
+2. **A local Rego rule engine**: best-practices and custom rules, no AWS
    dependency.
 
 Findings from both layers are rendered together, grouped by severity, with a
@@ -16,11 +16,11 @@ configurable exit-code threshold for CI use.
 
 AWS's IAM Access Analyzer already does deeper semantic policy validation than
 most standalone linters (action/resource correctness, missing conditions,
-privilege-escalation warnings) — but it only ships as a raw API. Meanwhile
+privilege-escalation warnings), but it only ships as a raw API. Meanwhile
 teams that self-serve IAM roles through GitOps (e.g. the
 [aws-controllers-k8s](https://aws-controllers-k8s.github.io/community/) IAM
 controller) end up with two disconnected checks: a lint on the *declared*
-permissions before merge, and a a permission boundary enforced at apply time —
+permissions before merge, and a permission boundary enforced at apply time,
 with nothing in between that scans the roles holistically against a shared,
 extensible set of best practices. `iamsentry` aims to fill that gap: it works
 out of the box on ACK-managed IAM as a quality-of-life win, but its primary
@@ -35,15 +35,15 @@ plain `string` fields in the CRD's schema. Helm rendering, `helm lint`, and the
 Kubernetes API server's own schema validation on `kubectl apply` only check for
 valid string. None of them look *inside* it. A malformed or invalid policy can
 make it all the way through and only fail when the ACK controller actually
-calls `PutRolePolicy`/`CreateRole` and AWS rejects it -- a runtime reconcile
-failure, not a CI-time PR check.
+calls `PutRolePolicy`/`CreateRole` and AWS rejects it: too late for any
+CI-time PR check to catch.
 
 `iamsentry` catches this at two different points:
 
 | Failure class | Caught by | AWS needed? | What Helm/kubectl/ArgoCD see |
 |---|---|---|---|
-| Malformed JSON (trailing comma, unclosed brace, etc.) | `input.Scan`'s own parser — a hard error, not a soft finding | No | Nothing — it's "a string," schema-valid |
-| Syntactically valid JSON, invalid/dangerous IAM grammar (missing `Resource`, a bad action name, etc.) | Access Analyzer `ValidatePolicy` | Yes | Nothing — same reason |
+| Malformed JSON (trailing comma, unclosed brace, etc.) | `input.Scan`'s own parser; it aborts the scan outright | No | Nothing: it's "a string," schema-valid |
+| Syntactically valid JSON, invalid/dangerous IAM grammar (missing `Resource`, a bad action name, etc.) | Access Analyzer `ValidatePolicy` | Yes | Nothing (same reason) |
 | Structurally valid but insecure (privesc actions, wildcards, etc.) | The Rego layer | No | Nothing |
 
 ## Usage
@@ -58,13 +58,13 @@ iamsentry scan [flags] <file-or-directory>
   -o, -output fmt[=file]  output format[=file]: text (default), sarif, or github (Actions
                       annotations); repeatable, at most one without a file (goes to stdout)
   -suppressions path path to a suppressions YAML file (default: .iamsentry-suppressions.yaml if present)
-  -ignore ids        comma-separated rule_ids to ignore for this run (unscoped, unreasoned, not for committing)
+  -ignore ids        comma-separated rule_ids to ignore for this run (unscoped, unreasoned, local use only)
   -deny-list path    path to a CheckAccessNotGranted deny-list YAML file (no default; off unless given)
   -deny-list-dir dir directory of deny-list YAML files, merged (mutually exclusive with -deny-list)
 ```
 
 `iamsentry` never renders Helm charts, Kustomize overlays, or anything else
-itself — it consumes already-rendered output. Typical CI usage:
+itself; it consumes already-rendered output. Typical CI usage:
 
 ```sh
 helm template ./chart -f values/prod.yaml > /tmp/rendered.yaml
@@ -80,7 +80,7 @@ iamsentry scan ./policies/
 ## Output formats
 
 `-o`/`-output` picks how findings are rendered, and where. It's repeatable,
-so one run can emit several formats at once — e.g. human-readable text on
+so one run can emit several formats at once, e.g. human-readable text on
 stdout for the job log, plus a SARIF file for code scanning upload:
 
 ```sh
@@ -90,32 +90,65 @@ iamsentry scan ./policies/ -o text -o sarif=iamsentry.sarif
 Give a format a `=file` to send it there instead of stdout. At most one
 output can go to stdout.
 
-- **`text`** (default) — grouped by severity, `file:line (object)`.
-- **`sarif`** — SARIF 2.1.0, for GitHub code scanning
+- `text` is the default: grouped by severity, `file:line (object)`.
+- `sarif` produces SARIF 2.1.0, for GitHub code scanning
   (`github/codeql-action/upload-sarif`) or any other SARIF consumer.
-- **`github`** — GitHub Actions workflow commands (`::error file=...,line=...::`).
-  GitHub shows them as inline annotations on the PR diff.
+- `github` emits GitHub Actions workflow commands
+  (`::error file=...,line=...::`), which GitHub shows as inline annotations
+  on the PR diff.
 
 ## What it scans
 
-- **Raw IAM policy JSON** (`{"Version": ..., "Statement": [...]}`) — the
+- **Raw IAM policy JSON** (`{"Version": ..., "Statement": [...]}`): the
   universal input, works regardless of what produced it.
-- **ACK `kind: Role`** and **`kind: Policy`** (`iam.services.k8s.aws`) —
+- **ACK `kind: Role`** and **`kind: Policy`** (`iam.services.k8s.aws`):
   auto-detected in YAML or JSON, single file or a directory scanned
   recursively, multi-document YAML supported.
 
-**Non goals:** resolving `permissionsBoundary`/`permissionsBoundaryRef`
-against the boundary's actual document. IAM permission boundaries are not
-statically validated against a role's declared policy at
-`CreateRole`/`PutRolePolicy` time — AWS computes the boundary ∩ policy
-intersection only at request-authorization time, per API call. A role
-policy that exceeds its boundary is not a security hole (the boundary still
-caps it); at worst it's a misleading/dead grant in the declared policy. That
-class of finding is better served by
-[`iam-policy-autopilot`](https://github.com/awslabs/iam-policy-autopilot)
-(AWS Labs), which determines what a role's declared permissions actually
-correspond to by analyzing the application's source code — the two tools
-are complementary.
+**Non goals:**
+
+- Resolving `permissionsBoundary`/`permissionsBoundaryRef` against the
+  boundary's actual document. IAM permission boundaries are not statically
+  validated against a role's declared policy at
+  `CreateRole`/`PutRolePolicy` time. AWS computes the boundary ∩ policy
+  intersection only at request-authorization time, per API call. A role
+  policy that exceeds its boundary is not a security hole (the boundary
+  still caps it); at worst it's a misleading/dead grant in the declared
+  policy. That class of finding is better served by
+  [`iam-policy-autopilot`](https://github.com/awslabs/iam-policy-autopilot)
+  (AWS Labs), which determines what a role's declared permissions actually
+  correspond to by analyzing the application's source code. The two
+  tools are complementary.
+- **Full ACK CRD schema validation.** `iamsentry` parses whatever content
+  is actually present in `assumeRolePolicyDocument`, `inlinePolicies`, and
+  `policyDocument` and validates the IAM policy JSON *inside* those string
+  fields. It does not separately validate the CRD against its full schema.
+  Full CRD schema validation (required fields, types) is the Kubernetes API 
+  server's and the ACK controller's responsibility. If you want
+  that caught at CI time too, e.g. flagging a Role manifest with no
+  `spec.assumeRolePolicyDocument` at all, pair it with
+  [`manifesto`](https://github.com/likesavabutworse/manifesto). It
+  evaluates the whole manifest, not just the embedded policy JSON, so it
+  can catch structural gaps like this one:
+
+  ```rego
+  # Not an iamsentry rule; this is a manifesto policy (a different tool,
+  # different package convention and input shape; see "A note on sharing
+  # rules with manifesto" below).
+  package manifesto.k8s.ack_role_trust_policy
+
+  deny contains {"msg": msg} if {
+      input.apiVersion == "iam.services.k8s.aws/v1alpha1"
+      input.kind == "Role"
+      not is_string(input.spec.assumeRolePolicyDocument)
+      msg := sprintf("Role/%s has no spec.assumeRolePolicyDocument", [input.metadata.name])
+  }
+  ```
+- **Dereferencing attached managed policies.** A Role's
+  `spec.policies` ARNs are recorded for visibility but never fetched or
+  scanned. Scanning a Role checks its trust policy and inline policies
+  only. The managed policies those ARNs point to aren't covered unless they are
+  supplied separately as their own scan input.
 
 ## AWS Access Analyzer layer
 
@@ -133,12 +166,9 @@ optional `severity` (`critical`/`high`/`medium`/`low`/`info`, defaults to
 `medium`).
 
 **Built-in rule bundle** (`internal/rules/builtin/`) ships six rules,
-deliberately narrow and cross-checked against existing prior art rather
-than invented ad hoc — see `internal/rules/builtin/README.md` for the full
-list and each `.rego` file's header comment for its specific source(s)
-(AWS's own `ValidatePolicy` issue codes, Checkov, Trivy, Salesforce's
-cloudsplaining/policy_sentry, DataDog's pathfinding.cloud
-privilege-escalation dataset):
+deliberately narrow and cross-checked against existing prior art. 
+See `internal/rules/builtin/README.md` for the full list and each `.rego` 
+file's header comment for its specific source(s):
 
 - Privilege-escalation actions (`iam:PutRolePolicy`, `iam:AttachRolePolicy`,
   etc.) in a role's own policy
@@ -147,54 +177,89 @@ privilege-escalation dataset):
 - `iam:*` granted alone
 - IAM identity/credential-bootstrapping actions (`iam:CreateUser`,
   `iam:CreateAccessKey`, `iam:CreateSAMLProvider`, etc.) that no
-  application/workload role has a legitimate reason to hold
-- A resource-scopable action (a small, deliberately conservative allowlist —
-  see the file's header for why) granted on a bare `Resource: "*"`, not a
-  scoped ARN glob
+  application/workload role has a legitimate need for
+- A resource-scopable action granted on a bare `Resource: "*"`. 
+  See [internal/rules/builtin/iam_wildcard_resource_scopable.rego](internal/rules/builtin/iam_wildcard_resource_scopable.rego)
 
-`rules/examples/` has two worked examples of custom rules:
+### Contract for custom rules
 
-- `required_owner_tag.rego` — every `Role` must carry an `owner` tag whose
-  value is in an allow-list.
-- `s3_list_separate_statement.rego` — `s3:ListBucket` (a bucket-level
-  action) must not share a statement with object-level actions like
-  `s3:GetObject`/`PutObject`, since one `Resource` value can't correctly
-  scope both.
+What this interface guarantees:
+
+- **Input**: a rule's `input` is always one scanned object at a time. 
+  `iamsentry` aims to remain a per resource linter. By iterating over 
+  discovered objects one at a time, it avoids turning into astateful 
+  graph-analysis tool. 
+- **Malformed `deny` entries are a hard failure**. A `deny` entry missing 
+  `msg` or `rule_id`, or with either as the wrong type, aborts the whole scan 
+  (exit 2) rather than silently dropping part of your policy surface.
+- **`severity` is always validated.** Omitting it defaults to
+  `medium`. Providing it requires one of `critical`, `error`, `high`,
+  `medium`, `low`, `info`, `informational`, `suggestion` (case-insensitive)
+  Anything else, including a typo like `critial`, is a hard failure.
+- **`rule_id` must be unique across every loaded rule**, built-in and
+  every `--rules-dir` module combined. Two rules emitting the same
+  `rule_id` with different `msg`/`severity` is a hard failure (exit 2) the
+  first time a scanned object triggers both of them. 
+- **`rule_id` is a stable identifier**: it's what suppressions (file, 
+  CRD annotation, and `--ignore`) match against. Renaming a `rule_id` 
+  silently orphans every existing suppression for it. 
+
+## Exit codes & severity
+
+A scan ends in exactly one of three outcomes:
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Clean. All enabled checks completed, and no unsuppressed finding met `-fail-on`'s threshold. |
+| `1` | Findings. All enabled checks completed, but at least one unsuppressed finding met the threshold. |
+| `2` | Error / incomplete: a required check could not complete (bad flags, unparseable input, a Rego rule bug, a failed AWS API call) or had to abort for a reason unrelated to what the scan actually found. |
+
+Exit `2` is deliberately kept distinct from exit `1`: an incomplete scan
+must never be mistaken for a clean one just because it also produced zero
+findings. This covers both configuration mistakes caught before any
+scanning starts (an invalid `-fail-on` value) and failures mid-scan.
+
+**`-fail-on <level>`** compares every unsuppressed finding's severity
+against `<level>` and exits `1` if any finding is at or above it in the
+order `ERROR > HIGH > MEDIUM > LOW > INFO`, so `-fail-on LOW` fails on a
+LOW, MEDIUM, HIGH, or ERROR  alike, not just an exact match. 
+`-fail-on never` is the onlt exception. It always exits `0` regardless of findings, 
+for a scan meant to be informational only. Any value is rejected up 
+front with exit `2`.
 
 ## Suppressing findings
 
 Three mechanisms, in the order they're applied, all matching on the
-finding's `RuleID` (a rego `rule_id`, or an Access Analyzer `IssueCode` —
+finding's `RuleID` (a rego `rule_id`, or an Access Analyzer `IssueCode`,
 falling back to the operation name for the three custom checks, which carry
 no issue code):
 
-1. **A suppressions file** — `.iamsentry-suppressions.yaml` in the current
-   directory by default, or `--suppressions <path>`. See
-   `.iamsentry-suppressions.example.yaml` for the format. Every entry
-   requires `rule_id` and `reason`; `source_file` (a glob) and
-   `object_name` narrow the match. This is the primary mechanism — it's the
-   only one that works for raw IAM JSON input, which has no comment syntax
-   for an inline suppression, and it's a committed, reviewable file.
-2. **A per-object annotation on ACK CRDs** —
-   `metadata.annotations["iamsentry.io/suppress"]: "rule-id-1, rule-id-2"`.
-   Idiomatic for teams working purely in the ACK ecosystem; always scoped to
-   that one object.
-3. **`--ignore rule_id[,rule_id...]`** — a blanket, unscoped, unreasoned CLI
-   override for local use. Not meant to be committed.
+1. A suppressions file, `.iamsentry-suppressions.yaml` in the current
+   directory by default or `--suppressions <path>`, is the primary
+   mechanism. See `.iamsentry-suppressions.example.yaml` for the format.
+   Every entry requires `rule_id` and `reason`; `source_file` (a glob) and
+   `object_name` narrow the match. It's the only one that works for raw IAM
+   JSON input, which has no comment syntax for an inline suppression, and
+   it's a committed, reviewable file.
+2. A per-object annotation on ACK CRDs,
+   `metadata.annotations["iamsentry.io/suppress"]: "rule-id-1, rule-id-2"`,
+   is idiomatic for teams working purely in the ACK ecosystem; it's always
+   scoped to that one object.
+3. `--ignore rule_id[,rule_id...]` is a blanket, unscoped, unreasoned CLI
+   override for local use, not meant to be committed.
 
-Suppressed findings are counted (not silently dropped from view) — a
-`suppressed N finding(s)` line goes to stderr on every run that suppresses
-something.
+Suppressed findings are still counted: a `suppressed N finding(s)` line
+goes to stderr on every run that suppresses something.
 
 ## CheckAccessNotGranted deny list
 
 `--deny-list <file>` or `--deny-list-dir <dir>` (mutually exclusive) checks
-every scanned policy against a deny list — "does this policy grant any of
-*these specific* forbidden actions/resources?" — via live AWS
-`CheckAccessNotGranted` calls. **Off by default, no built-in list**: unlike the
-Rego rules, what's forbidden is an org policy decision, not a universal best
-practice, so there's no sensible default. `denylist/examples/example.yaml` is a
-an example template covering all three `Access` types.
+every scanned policy for whether it grants any of *these specific* forbidden
+actions/resources, via live AWS `CheckAccessNotGranted` calls. **Off by
+default, no built-in list**: the Rego rules encode a universal best
+practice, but what's forbidden here is each org's own policy decision, so
+there's no sensible default. [`examples/denylist-example.yaml`](examples/denylist-example.yaml)
+is an example template covering all three `Access` types.
 
 Each entry needs `id` (becomes the finding's `rule_id`, for suppression)
 and at least one of `actions`/`resources`; `reason` is optional:
@@ -249,14 +314,14 @@ The AWS Access Analyzer layer needs AWS credentials in the job (e.g.
 
 ## Future extensions
 
-- **`CheckNoNewAccess`** — diffs a new policy against a baseline (e.g. a
+- **`CheckNoNewAccess`**: diffs a new policy against a baseline (e.g. a
   PR's target-branch version) and fails if it grants anything new.
-  Implemented and unit-tested, not wired into the CLI yet.
-- **`CheckNoPublicAccess`** — checks whether a *resource-based* policy
+  Implemented and unit-tested; the CLI doesn't call it yet.
+- **`CheckNoPublicAccess`**: checks whether a *resource-based* policy
   (S3 bucket policy, KMS key policy, etc.) allows public access. Implemented
-  and unit-tested, not wired in: it doesn't fit this tool's input model well
-  today, since `iamsentry` scans IAM roles/policies, not the resource
-  policies this operation is built for.
+  and unit-tested, but not wired in: it doesn't fit this tool's input model
+  well today, since `iamsentry` scans IAM roles/policies, while this
+  operation is built for resource policies.
 - **Cedar policy language support.**
 - **pre-commit hook**
 
